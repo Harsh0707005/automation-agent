@@ -1,3 +1,5 @@
+const BACKEND_URL = 'http://127.0.0.1:8765';
+
 const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const messagesEl = document.getElementById('messages');
@@ -10,14 +12,27 @@ function appendMessage(text, isUser = true) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function send() {
+async function send() {
   const text = input.value.trim();
   if (!text) return;
   appendMessage(text);
   input.value = '';
   sendBtn.disabled = true;
-  input.focus();
-  setTimeout(() => { sendBtn.disabled = false; }, 0);
+  try {
+    const res = await fetch(`${BACKEND_URL}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) appendMessage(`Error: ${data.error || res.statusText}`);
+    else if (!data.ok) appendMessage(`Error: ${data.error || 'Unknown'}`);
+  } catch (err) {
+    appendMessage(`Error: ${err.message || 'Backend unreachable'}`);
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
 }
 
 function updateSendState() {
