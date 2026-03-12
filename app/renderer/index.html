@@ -8,10 +8,13 @@
   <link rel="stylesheet" href="styles/main.css">
 </head>
 <body>
-  <div class="messages" id="messages"></div>
-  <div class="input-row">
-    <input type="text" id="chat-input" placeholder="Describe what you want done..." autofocus autocomplete="off" />
-    <button id="send-btn" type="button">Send</button>
+  <div class="app-shell">
+    <div class="messages" id="messages"></div>
+    <div class="input-row">
+      <select id="model-select"></select>
+      <input type="text" id="chat-input" placeholder="Describe what you want done..." autofocus autocomplete="off" />
+      <button id="send-btn" type="button">Send</button>
+    </div>
   </div>
   <script src="index.js"></script>
 </body>
