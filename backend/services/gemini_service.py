@@ -24,6 +24,8 @@ class GeminiService:
         model: str | None = None,
         **kwargs,
     ) -> CompletionResult:
+        kwargs = dict(kwargs)
+        kwargs.pop("timeout", None)  # generate_content() does not accept timeout
         model_name = model or self._default_model
         gemini = genai.GenerativeModel(model_name)
         resp = gemini.generate_content(prompt, **kwargs)

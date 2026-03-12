@@ -64,6 +64,8 @@ body {
   align-self: flex-start;
   background: #111827;
   border: 1px solid #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .message.assistant.typing {
@@ -139,6 +141,20 @@ body {
   box-shadow: 0 0 0 2px rgba(115, 115, 115, 0.2);
 }
 
+.agent-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #a3a3a3;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agent-toggle input {
+  accent-color: #737373;
+}
+
 #chat-input {
   flex: 1;
   padding: 14px 20px;
@@ -188,4 +204,171 @@ body {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+}
+
+.plan-block {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+}
+
+.plan-block h4 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: #94a3b8;
+}
+
+.plan-block ol {
+  margin: 0;
+  padding-left: 20px;
+  white-space: pre-wrap;
+}
+
+.plan-proceed-btn {
+  margin-top: 12px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  border-radius: 10px;
+  background: #22c55e;
+  color: #0d0d0d;
+  cursor: pointer;
+}
+
+.plan-proceed-btn:hover {
+  background: #16a34a;
+}
+
+.command-card {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: #1e1b4b;
+  border: 1px solid #3730a3;
+}
+
+.command-card .command-text {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  margin-bottom: 10px;
+}
+
+.command-card .command-reason {
+  font-size: 13px;
+  color: #a5b4fc;
+  margin-bottom: 12px;
+}
+
+.command-card .command-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.command-approve-btn {
+  padding: 8px 18px;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  background: #22c55e;
+  color: #0d0d0d;
+  cursor: pointer;
+}
+
+.command-approve-btn:hover {
+  background: #16a34a;
+}
+
+.command-decline-btn {
+  padding: 8px 18px;
+  font-size: 14px;
+  border: 1px solid #f87171;
+  border-radius: 8px;
+  background: transparent;
+  color: #f87171;
+  cursor: pointer;
+}
+
+.command-decline-btn:hover {
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.command-result-block {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: #172554;
+  border: 1px solid #1e3a8a;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.step-badge {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  font-size: 14px;
+  color: #9ca3af;
+}
+
+.workflow-done,
+.workflow-stopped {
+  align-self: flex-start;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.workflow-done {
+  background: #14532d;
+  border: 1px solid #22c55e;
+  color: #bbf7d0;
+  max-width: 100%;
+}
+
+.workflow-done-heading {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.workflow-done-summary {
+  font-weight: normal;
+  opacity: 0.95;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.workflow-done-summary p {
+  margin: 0 0 0.5em 0;
+}
+
+.workflow-done-summary p:last-child {
+  margin-bottom: 0;
+}
+
+.workflow-done-summary code {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.92em;
+}
+
+.workflow-done-summary strong {
+  font-weight: 700;
+}
+
+.workflow-stopped {
+  background: #450a0a;
+  border: 1px solid #f87171;
+  color: #fecaca;
 }

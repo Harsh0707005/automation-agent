@@ -22,9 +22,11 @@ class OpenAIService:
         **kwargs,
     ) -> CompletionResult:
         model = model or self.DEFAULT_MODEL
+        timeout = kwargs.pop("timeout", 90)
         resp = self._client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
+            timeout=timeout,
             **kwargs,
         )
         msg = resp.choices[0].message

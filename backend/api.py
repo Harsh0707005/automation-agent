@@ -1,11 +1,16 @@
-from typing import Optional
+import asyncio
+import json
+from typing import Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.engine import LLMEngine
 from backend.services import OpenAIService, AnthropicService, GeminiService
+from backend.agent import run_agent
+from backend.agent.planning import plan
+from backend.agent.ws_agent import AgentSession, run_agent_ws
 
 
 app = FastAPI()
@@ -24,6 +29,7 @@ class MessageRequest(BaseModel):
     message: str
     provider: Optional[str] = None
     model: Optional[str] = None
+    context: Optional[dict[str, Any]] = None
 
 
 class ModelInfo(BaseModel):
@@ -35,24 +41,70 @@ class ModelInfo(BaseModel):
 
 MODELS: list[ModelInfo] = [
     ModelInfo(
-        id="openai:gpt-4o-mini",
+        id="openai:gpt-5-mini-2025-08-07",
         provider=LLMEngine.PROVIDER_OPENAI,
         model=OpenAIService.DEFAULT_MODEL,
-        label="OpenAI – gpt-4o-mini",
+        label="GPT-5 Mini",
     ),
     ModelInfo(
-        id="anthropic:claude-3-5-haiku",
+        id="anthropic:claude-haiku-4-5",
         provider=LLMEngine.PROVIDER_ANTHROPIC,
         model=AnthropicService.DEFAULT_MODEL,
-        label="Claude – 3.5 Haiku",
+        label="Claude Haiku 4.5",
     ),
     ModelInfo(
-        id="gemini:2.0-flash",
+        id="gemini:gemini-3.1-pro-preview",
         provider=LLMEngine.PROVIDER_GEMINI,
         model=GeminiService.DEFAULT_MODEL,
-        label="Gemini – 2.0 Flash",
+        label="Gemini 3.1 Pro Preview",
     ),
 ]
+
+
+def _build_prompt_with_context(message: str, context: Optional[dict[str, Any]]) -> str:
+    if not context:
+        return message
+    lines = ["Device context:", *[f"  {k}: {v}" for k, v in sorted(context.items())], "", message]
+    return "\n".join(lines)
+
+
+@app.websocket("/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    session = AgentSession(engine=engine)
+
+    async def send(msg: dict):
+        await websocket.send_text(json.dumps(msg))
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+            typ = msg.get("type")
+            if typ == "start":
+                message = (msg.get("payload") or {}).get("message", "").strip()
+                provider = (msg.get("payload") or {}).get("provider")
+                model = (msg.get("payload") or {}).get("model")
+                context = (msg.get("payload") or {}).get("context")
+                if not message or not provider:
+                    await send({"type": "error", "error": "message and provider required"})
+                    continue
+                session.objective = message
+                session.provider = provider
+                session.model = model
+                session.context = context
+                try:
+                    planned = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: plan(message, engine, provider, model, context=context)
+                    )
+                    session.plan = planned
+                    await send({"type": "plan", "plan": planned.model_dump()})
+                    # Start execution immediately; no approval step
+                    await run_agent_ws(send, session)
+                except Exception as e:
+                    await send({"type": "error", "error": str(e)})
+    except Exception:
+        pass
 
 
 @app.get("/models")
@@ -60,16 +112,52 @@ def get_models():
     return {"ok": True, "models": [m.model_dump() for m in MODELS]}
 
 
+@app.post("/plan")
+def post_plan(req: MessageRequest):
+    print("[plan] request received", flush=True)
+    prompt = req.message.strip()
+    if not prompt:
+        return {"ok": False, "error": "Empty message"}
+    if not req.provider:
+        return {"ok": False, "error": "Provider required for plan"}
+    try:
+        planned = plan(prompt, engine, req.provider, req.model, context=req.context)
+        return {"ok": True, "plan": planned.model_dump()}
+    except Exception as e:
+        print(f"[plan] error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/agent")
+def post_agent(req: MessageRequest):
+    print("[agent] request received", flush=True)
+    prompt = req.message.strip()
+    if not prompt:
+        return {"ok": False, "error": "Empty message"}
+    if not req.provider:
+        return {"ok": False, "error": "Provider required for agent"}
+    try:
+        result = run_agent(user_request=prompt, provider=req.provider, model=req.model, engine=engine, context=req.context)
+        print("[agent] done", flush=True)
+        return {"ok": True, "agent": result.model_dump()}
+    except Exception as e:
+        print(f"[agent] error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/message")
 def post_message(req: MessageRequest):
+    print("[message] request received", flush=True)
     prompt = req.message.strip()
     if not prompt:
         return {"ok": False, "error": "Empty message"}
 
+    prompt_with_context = _build_prompt_with_context(prompt, req.context)
+
     # If a specific provider/model is chosen, call only that one
     if req.provider:
         try:
-            result = engine.complete(prompt, provider=req.provider, model=req.model)
+            result = engine.complete(prompt_with_context, provider=req.provider, model=req.model)
             print(
                 f"[{result.provider}] {result.model}: "
                 f"{result.content[:200]}{'...' if len(result.content) > 200 else ''}"
@@ -93,7 +181,7 @@ def post_message(req: MessageRequest):
     responses = []
     for provider in engine.get_providers():
         try:
-            result = engine.complete(prompt, provider=provider)
+            result = engine.complete(prompt_with_context, provider=provider)
             responses.append(
                 {
                     "provider": result.provider,

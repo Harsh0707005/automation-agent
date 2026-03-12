@@ -1,3 +1,5 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('electronAPI', {});
+contextBridge.exposeInMainWorld('electronAPI', {
+  getDeviceContext: () => ipcRenderer.invoke('get-device-context'),
+});
