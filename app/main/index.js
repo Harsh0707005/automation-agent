@@ -158,8 +158,18 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('add-memory-chunks', (_, newChunks) => {
+    if (!Array.isArray(newChunks) || newChunks.length === 0) return true;
     const existing = readMemory();
-    fs.writeFileSync(getMemoryFile(), JSON.stringify([...existing, ...newChunks]), 'utf8');
+    const normalize = (s) => String(s?.content ?? s).trim().replace(/\s+/g, ' ').toLowerCase();
+    const seen = new Set(existing.map((c) => normalize(c)));
+    const toAdd = newChunks.filter((c) => {
+      const key = normalize(c);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (toAdd.length === 0) return true;
+    fs.writeFileSync(getMemoryFile(), JSON.stringify([...existing, ...toAdd]), 'utf8');
     return true;
   });
 

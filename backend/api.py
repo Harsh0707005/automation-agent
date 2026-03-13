@@ -332,6 +332,13 @@ class ExtractMemoryRequest(BaseModel):
     model: Optional[str] = None
 
 
+class FilterMemoryDuplicatesRequest(BaseModel):
+    existing: list[str]
+    new: list[str]
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
 @app.post("/extract-memory")
 def post_extract_memory(req: ExtractMemoryRequest):
     if not req.user_message or not req.assistant_response:
@@ -345,6 +352,26 @@ def post_extract_memory(req: ExtractMemoryRequest):
         return {"ok": True, "chunks": chunks}
     except Exception as e:
         return {"ok": False, "error": str(e), "chunks": []}
+
+
+@app.post("/filter-memory-duplicates")
+def post_filter_memory_duplicates(req: FilterMemoryDuplicatesRequest):
+    """Return indices of req.new that are not semantically duplicate of any req.existing."""
+    if not req.new:
+        return {"ok": True, "keep_indices": []}
+    provider = req.provider or engine.get_providers()[0]
+    try:
+        from backend.agent.memory_extraction import filter_duplicate_memory
+        keep_indices = filter_duplicate_memory(
+            req.existing or [],
+            req.new,
+            engine,
+            provider,
+            req.model,
+        )
+        return {"ok": True, "keep_indices": keep_indices}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "keep_indices": list(range(len(req.new)))}
 
 
 @app.post("/title", response_model=TitleResponse)

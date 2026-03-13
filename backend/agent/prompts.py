@@ -25,6 +25,30 @@ def memory_extraction_user_prompt(user_message: str, assistant_response: str) ->
     )
 
 
+MEMORY_FILTER_SYSTEM = """You are a deduplication filter for a memory system. You are given:
+1. EXISTING: a list of memory statements already stored.
+2. NEW: a list of candidate memory statements to possibly add.
+
+Your task: decide which NEW statements are semantically redundant with any EXISTING one. Two statements are redundant if they convey the same fact or meaning, even if worded differently (e.g. "User lives in Surat" vs "User is based in Surat, India", or "User prefers dark mode" vs "User likes dark theme"). Also treat a NEW statement as redundant if it is a subset or paraphrase of an existing one, or if an existing one already implies it.
+
+Return the 0-based indices of NEW statements that are NOT redundant — i.e. that add genuinely new information not already covered by EXISTING. If all NEW are redundant, return an empty list.
+
+Output valid JSON only. No markdown. Exact shape:
+{"keep_indices": [0, 2]}
+Use the exact key "keep_indices". Value is a list of integers (indices into the NEW list)."""
+
+
+def memory_filter_duplicates_prompt(existing: list[str], new: list[str]) -> str:
+    existing_blob = "\n".join(f"- {s[:500]}" for s in existing[:100])
+    new_blob = "\n".join(f"{i}. {s[:500]}" for i, s in enumerate(new))
+    return (
+        f"{MEMORY_FILTER_SYSTEM}\n\n"
+        f"EXISTING memory ({len(existing)} items):\n{existing_blob}\n\n"
+        f"NEW candidates (0-based index . text):\n{new_blob}\n\n"
+        "Which NEW indices should we KEEP (not redundant)? Output JSON only: {\"keep_indices\": [...]}"
+    )
+
+
 PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant. You are pair programming with the user to achieve their request. Your main goal is to produce a minimal, ordered list of high-level steps that the agent will execute (terminal commands, reading files, or producing text). The agent runs on the user's machine; it can run terminal commands, read files, and produce text. It cannot use the GUI or act like a human user.
 
 <planning_rules>

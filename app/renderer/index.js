@@ -909,7 +909,7 @@ async function getRelevantMemory(query) {
   return scored.slice(0, 5).map((s) => s.chunk);
 }
 
-/** Fire-and-forget: extract memory from an exchange and persist any new chunks. */
+/** Fire-and-forget: extract memory from an exchange and persist only non-duplicate chunks (semantic dedupe via backend). */
 function extractAndSaveMemory(userMessage, assistantResponse) {
   if (!userMessage || !assistantResponse) return;
   const selected = getSelectedModel();
@@ -931,8 +931,33 @@ function extractAndSaveMemory(userMessage, assistantResponse) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok || !data.chunks?.length) return;
 
+      const newContents = data.chunks;
+      const existing = window.electronAPI?.getMemory ? await window.electronAPI.getMemory() : [];
+      const existingContents = (existing || []).map((c) => c.content || '').filter(Boolean);
+
+      const filterRes = await fetch(`${BACKEND_URL}/filter-memory-duplicates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          existing: existingContents,
+          new: newContents,
+          provider,
+          model: selected.model || null,
+        }),
+      });
+      const filterData = await filterRes.json().catch(() => ({}));
+      const keepIndices = filterRes.ok && filterData.ok && Array.isArray(filterData.keep_indices)
+        ? filterData.keep_indices
+        : newContents.map((_, i) => i);
+
+      const toAdd = keepIndices
+        .filter((i) => i >= 0 && i < newContents.length)
+        .map((i) => newContents[i])
+        .filter(Boolean);
+      if (!toAdd.length) return;
+
       const now = new Date().toISOString();
-      const newChunks = data.chunks.map((content) => ({ id: generateId(), content, createdAt: now }));
+      const newChunks = toAdd.map((content) => ({ id: generateId(), content, createdAt: now }));
       if (window.electronAPI?.addMemoryChunks) {
         await window.electronAPI.addMemoryChunks(newChunks);
       }
