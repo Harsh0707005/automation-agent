@@ -171,6 +171,18 @@ async def ws_endpoint(websocket: WebSocket):
                 fut = getattr(session, "pending_confirmation", None)
                 if fut is not None and not fut.done():
                     fut.set_result(approved)
+            elif typ == "command_result":
+                # Command finished on the user's machine; resume the awaiting agent step.
+                payload = msg.get("payload") or {}
+                fut = getattr(session, "pending_command_result", None)
+                if fut is not None and not fut.done():
+                    fut.set_result(
+                        {
+                            "stdout": str(payload.get("stdout") or ""),
+                            "stderr": str(payload.get("stderr") or ""),
+                            "returncode": int(payload.get("returncode") or 0),
+                        }
+                    )
     except Exception:
         pass
 

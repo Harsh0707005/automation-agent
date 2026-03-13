@@ -1,7 +1,7 @@
 const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 
 const RENDERER_PATH = path.join(__dirname, '..', 'renderer');
@@ -97,6 +97,46 @@ function getDeviceContext() {
 
 app.whenReady().then(() => {
   ipcMain.handle('get-device-context', getDeviceContext);
+
+  ipcMain.handle('run-interactive-command', async (event, command) => {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    return await new Promise((resolve) => {
+      try {
+        const child = spawn(command, { shell: true });
+        let stdout = '';
+        let stderr = '';
+
+        const sendStream = (stream, data) => {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('command-stream', { stream, data: data.toString() });
+          }
+        };
+
+        child.stdout.on('data', (data) => {
+          stdout += data.toString();
+          sendStream('stdout', data);
+        });
+        child.stderr.on('data', (data) => {
+          stderr += data.toString();
+          sendStream('stderr', data);
+        });
+
+        const finalize = (code, err) => {
+          if (err) {
+            resolve({ stdout, stderr: String(err), returncode: -1 });
+          } else {
+            resolve({ stdout, stderr, returncode: typeof code === 'number' ? code : 0 });
+          }
+        };
+
+        child.on('error', (err) => finalize(undefined, err));
+        child.on('close', (code) => finalize(code, null));
+      } catch (err) {
+        resolve({ stdout: '', stderr: String(err), returncode: -1 });
+      }
+    });
+  });
+
   createWindow();
 });
 

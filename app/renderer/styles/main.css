@@ -311,6 +311,26 @@ body {
   word-break: break-word;
 }
 
+.terminal-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-heading {
+  font-size: 13px;
+  font-weight: 500;
+  color: #bfdbfe;
+}
+
+.terminal-output {
+  margin: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .step-badge {
   align-self: flex-start;
   padding: 8px 14px;

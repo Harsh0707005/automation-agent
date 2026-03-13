@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 
 from backend.engine import LLMEngine
 from backend.agent.step_executor import get_instructions, get_instructions_fallback
-from backend.agent.command_runner import run_command
 from backend.agent.verify import verify_step_complete
 from backend.agent.recovery import get_recovery_instructions
 from backend.agent.file_ops import read_file as do_read_file, write_file as do_write_file
@@ -27,6 +26,8 @@ class AgentSession:
     last_read_content: str = ""
     state: str = "idle"
     pending_confirmation: asyncio.Future | None = None
+    # For awaiting command results coming back from the Electron client
+    pending_command_result: asyncio.Future | None = None
 
 
 def _is_potentially_destructive_command(command: str) -> bool:
@@ -121,24 +122,35 @@ async def run_agent_ws(send_fn, session: AgentSession):
                             "reason": "User declined the requested command.",
                         })
                         return
+
+                # Ask the Electron client to run this command on the user's machine.
                 await send_fn({"type": "run_command_start", "command": cmd})
-                result = await run_sync(lambda: run_command(cmd))
-                await send_fn({
-                    "type": "command_result",
-                    "stdout": result["stdout"],
-                    "stderr": result["stderr"],
-                    "returncode": result["returncode"],
-                })
+
+                loop = asyncio.get_event_loop()
+                session.pending_command_result = loop.create_future()
+                result = await session.pending_command_result
+                session.pending_command_result = None
+
                 # Store enough stdout for summary (8K chars) so the final summary can describe results accurately
                 stdout_snap = (result["stdout"] or "")[:8000]
-                session.completed_results.append((step.id, f"Ran: {cmd}\ncode={result['returncode']}\nstdout: {stdout_snap}"))
+                session.completed_results.append(
+                    (step.id, f"Ran: {cmd}\ncode={result['returncode']}\nstdout: {stdout_snap}")
+                )
 
                 run_failed = result["returncode"] != 0
                 if not run_failed:
-                    step_complete = await run_sync(lambda: verify_step_complete(
-                        step.description, cmd, result["stdout"], result["stderr"], result["returncode"],
-                        engine, session.provider, session.model,
-                    ))
+                    step_complete = await run_sync(
+                        lambda: verify_step_complete(
+                            step.description,
+                            cmd,
+                            result["stdout"],
+                            result["stderr"],
+                            result["returncode"],
+                            engine,
+                            session.provider,
+                            session.model,
+                        )
+                    )
                     if step_complete:
                         session.step_index += 1
                         session.instruction_index = 0
@@ -147,11 +159,20 @@ async def run_agent_ws(send_fn, session: AgentSession):
                         break
                     run_failed = True  # verify said not complete (e.g. stderr had usage/error)
                 if run_failed:
-                    recovery = await run_sync(lambda: get_recovery_instructions(
-                        step.description, session.objective, cmd,
-                        result["stdout"], result["stderr"], result["returncode"],
-                        session.completed_results, engine, session.provider, session.model,
-                    ))
+                    recovery = await run_sync(
+                        lambda: get_recovery_instructions(
+                            step.description,
+                            session.objective,
+                            cmd,
+                            result["stdout"],
+                            result["stderr"],
+                            result["returncode"],
+                            session.completed_results,
+                            engine,
+                            session.provider,
+                            session.model,
+                        )
+                    )
                     if recovery is None:
                         await send_fn({"type": "workflow_stopped", "reason": "Recovery aborted after failure"})
                         return
@@ -238,7 +259,13 @@ async def run_agent_ws(send_fn, session: AgentSession):
             session.instructions = []
 
     session.state = "idle"
-    summary = await run_sync(lambda: generate_workflow_summary(
-        session.objective, session.completed_results, engine, session.provider, session.model,
-    ))
+    summary = await run_sync(
+        lambda: generate_workflow_summary(
+            session.objective,
+            session.completed_results,
+            engine,
+            session.provider,
+            session.model,
+        )
+    )
     await send_fn({"type": "workflow_done", "summary": summary})

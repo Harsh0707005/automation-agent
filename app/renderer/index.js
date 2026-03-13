@@ -28,7 +28,18 @@ let availableModels = [];
 let typingBubble = null;
 let ws = null;
 let wsReady = false;
+let currentTerminalBlock = null;
+let currentTerminalPre = null;
 
+// Wire up streaming output from Electron main (user-side command execution).
+if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'function') {
+  window.electronAPI.onCommandStream((msg) => {
+    if (!msg || typeof msg.data !== 'string') return;
+    if (!currentTerminalPre) return;
+    currentTerminalPre.textContent += msg.data;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
+}
 function appendMessage(text, isUser = true) {
   const div = document.createElement('div');
   div.className = `message ${isUser ? 'user' : 'assistant'}`;
@@ -108,16 +119,38 @@ function onWsMessage(ev) {
   }
   if (typ === 'run_command_start') {
     const d = document.createElement('div');
-    d.className = 'step-badge';
-    d.textContent = `Running: ${msg.command || ''}`;
+    d.className = 'command-result-block terminal-block';
+    const heading = document.createElement('div');
+    heading.className = 'terminal-heading';
+    heading.textContent = `Running: ${msg.command || ''}`;
+    d.appendChild(heading);
+    const pre = document.createElement('pre');
+    pre.className = 'terminal-output';
+    d.appendChild(pre);
     messagesEl.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    currentTerminalBlock = d;
+    currentTerminalPre = pre;
+
+    // Kick off command execution on the user's machine via Electron main.
+    if (window.electronAPI && typeof window.electronAPI.runInteractiveCommand === 'function') {
+      window.electronAPI.runInteractiveCommand(msg.command || '').then((result) => {
+        // Send the final result back to the backend so the agent can continue.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'command_result',
+            payload: {
+              stdout: result.stdout || '',
+              stderr: result.stderr || '',
+              returncode: result.returncode ?? 0,
+            },
+          }));
+        }
+      });
+    }
     return;
   }
-  if (typ === 'command_result') {
-    showCommandResult(msg.stdout, msg.stderr, msg.returncode);
-    return;
-  }
+  // Note: 'command_result' messages now flow from the renderer TO backend, not from backend to renderer.
   if (typ === 'step_complete') {
     const d = document.createElement('div');
     d.className = 'step-badge';
