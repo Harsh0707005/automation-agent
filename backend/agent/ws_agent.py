@@ -7,7 +7,12 @@ from backend.agent.step_executor import get_instructions, get_instructions_fallb
 from backend.agent.verify import verify_step_complete
 from backend.agent.recovery import get_recovery_instructions
 from backend.agent.file_ops import read_file as do_read_file, write_file as do_write_file
-from backend.agent.respond import generate_response, generate_workflow_summary
+from backend.agent.respond import (
+    generate_response,
+    generate_workflow_summary,
+    is_reply_only_workflow,
+    get_reply_only_preview,
+)
 from backend.agent.schema import Plan, Instruction
 
 
@@ -414,14 +419,21 @@ async def run_agent_ws(send_fn, session: AgentSession):
 
     # ── Final summary ─────────────────────────────────────────────────────────
     session.state = "idle"
-    summary = await run_sync(
-        lambda: generate_workflow_summary(
-            session.objective,
-            session.completed_results,
-            engine,
-            session.provider,
-            session.model,
+    if is_reply_only_workflow(session.completed_results):
+        # No LLM summary for pure reply-from-memory; avoid redundant "Result: Responded with..."
+        summary = ""
+        reply_preview = get_reply_only_preview(session.completed_results)
+        session.last_summary = reply_preview or ""
+        await send_fn({"type": "workflow_done", "summary": summary, "reply_preview": reply_preview or None})
+    else:
+        summary = await run_sync(
+            lambda: generate_workflow_summary(
+                session.objective,
+                session.completed_results,
+                engine,
+                session.provider,
+                session.model,
+            )
         )
-    )
-    session.last_summary = summary
-    await send_fn({"type": "workflow_done", "summary": summary})
+        session.last_summary = summary
+        await send_fn({"type": "workflow_done", "summary": summary})

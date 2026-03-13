@@ -804,6 +804,58 @@ body {
   display: inline-block;
 }
 
+/* Collapsible "Thinking…" block: plan, steps, intermediary messages (expanded on click) */
+.workflow-thinking {
+  align-self: flex-start;
+  max-width: 85%;
+  margin: 6px 0;
+  padding: 0;
+  border-radius: 12px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  font-size: 14px;
+}
+
+.workflow-thinking summary {
+  padding: 10px 14px;
+  cursor: pointer;
+  color: #94a3b8;
+  list-style: none;
+  user-select: none;
+}
+
+.workflow-thinking summary::-webkit-details-marker {
+  display: none;
+}
+
+.workflow-thinking summary::before {
+  content: '▸ ';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.workflow-thinking[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.workflow-thinking-content {
+  padding: 10px 14px 14px;
+  border-top: 1px solid #1e293b;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-message-inline {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
 .step-badge {
   align-self: flex-start;
   padding: 8px 14px;

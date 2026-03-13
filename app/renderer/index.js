@@ -64,6 +64,8 @@ let lastSentUserMessage = '';
 // terminalMap: cmdId -> { block: <details>, pre: <pre> }
 // Multiple entries coexist during parallel step execution.
 const terminalMap = new Map();
+// When set, plan/step messages/commands go inside this collapsible; final response is the only visible bubble.
+let currentWorkflowThinking = null; // { details: HTMLDetailsElement, content: HTMLElement }
 let activeAgentWorkflow = false;
 let queuedAgentRequests = [];
 let nextQueueId = 1;
@@ -237,10 +239,11 @@ async function openConversation(id) {
   queuedAgentRequests = [];
   renderQueue();
 
-  // Clear and re-render chat from stored messages
+  // Clear and re-render chat from stored messages (group plan/steps into Thinking… collapsible)
   messagesEl.innerHTML = '';
+  const thinkingRef = { current: null };
   for (const msg of currentConversationMessages) {
-    renderStoredMessage(msg);
+    renderStoredMessage(msg, thinkingRef);
   }
 
   await refreshSidebar();
@@ -258,70 +261,128 @@ function startNewConversation() {
   input.focus();
 }
 
-/** Render a stored message record back into the DOM (no recording). */
-function renderStoredMessage(msg) {
+/** Render a stored message record back into the DOM (no recording). Uses thinkingContainer to group plan/steps into one collapsible. */
+function renderStoredMessage(msg, thinkingContainerRef) {
+  const tc = thinkingContainerRef;
   switch (msg.type) {
     case 'user':
       appendMessage(msg.text, true, false);
+      tc.current = null;
       break;
     case 'assistant':
-      appendMessage(msg.text, false, false);
+      if (tc.current) {
+        const div = document.createElement('div');
+        div.className = 'step-message-inline';
+        div.textContent = msg.text;
+        tc.current.appendChild(div);
+      } else {
+        appendMessage(msg.text, false, false);
+      }
       break;
-    case 'plan':
-      showPlan(msg.plan, false);
+    case 'plan': {
+      const details = document.createElement('details');
+      details.className = 'workflow-thinking';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Thinking…';
+      details.appendChild(summary);
+      const content = document.createElement('div');
+      content.className = 'workflow-thinking-content';
+      details.appendChild(content);
+      messagesEl.appendChild(details);
+      tc.current = content;
+      showPlan(msg.plan, false, content);
       break;
+    }
     case 'step_start': {
+      if (!tc.current) {
+        const details = document.createElement('details');
+        details.className = 'workflow-thinking';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Thinking…';
+        details.appendChild(summary);
+        tc.current = document.createElement('div');
+        tc.current.className = 'workflow-thinking-content';
+        details.appendChild(tc.current);
+        messagesEl.appendChild(details);
+      }
       const badge = document.createElement('div');
       badge.className = 'step-badge';
       badge.textContent = `Step ${msg.step_id}: ${msg.description || ''}`;
-      messagesEl.appendChild(badge);
+      tc.current.appendChild(badge);
+      break;
+    }
+    case 'step_message': {
+      if (tc.current) {
+        const div = document.createElement('div');
+        div.className = 'step-message-inline';
+        div.textContent = msg.text || '';
+        tc.current.appendChild(div);
+      }
       break;
     }
     case 'step_failed': {
-      const d = document.createElement('div');
-      d.className = 'step-badge step-failed';
-      d.textContent = `Step ${msg.step_id} failed${msg.reason ? ': ' + msg.reason : ''}`;
-      messagesEl.appendChild(d);
+      if (tc.current) {
+        const d = document.createElement('div');
+        d.className = 'step-badge step-failed';
+        d.textContent = `Step ${msg.step_id} failed${msg.reason ? ': ' + msg.reason : ''}`;
+        tc.current.appendChild(d);
+      }
       break;
     }
     case 'step_complete': {
-      const d = document.createElement('div');
-      d.className = 'step-badge';
-      d.textContent = `Step ${msg.step_id} complete`;
-      messagesEl.appendChild(d);
+      if (tc.current) {
+        const d = document.createElement('div');
+        d.className = 'step-badge';
+        d.textContent = `Step ${msg.step_id} complete`;
+        tc.current.appendChild(d);
+      }
       break;
     }
     case 'command': {
+      if (!tc.current) {
+        const details = document.createElement('details');
+        details.className = 'workflow-thinking';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Thinking…';
+        details.appendChild(summary);
+        tc.current = document.createElement('div');
+        tc.current.className = 'workflow-thinking-content';
+        details.appendChild(tc.current);
+        messagesEl.appendChild(details);
+      }
       const d = document.createElement('details');
       d.className = 'command-result-block terminal-block terminal-collapsible';
-      const summary = document.createElement('summary');
+      const sum = document.createElement('summary');
       const heading = document.createElement('span');
       heading.className = 'terminal-heading';
       heading.textContent = `Running: ${msg.command || ''}`;
-      summary.appendChild(heading);
-      d.appendChild(summary);
+      sum.appendChild(heading);
+      d.appendChild(sum);
       if (msg.output) {
         const pre = document.createElement('pre');
         pre.className = 'terminal-output';
         pre.textContent = msg.output;
         d.appendChild(pre);
       }
-      messagesEl.appendChild(d);
+      tc.current.appendChild(d);
       break;
     }
     case 'workflow_done': {
-      if (msg.summary && msg.summary.trim()) {
-        const d = document.createElement('div');
-        d.className = 'workflow-done';
-        const summaryEl = document.createElement('div');
-        summaryEl.className = 'workflow-done-summary';
-        summaryEl.innerHTML = renderMarkdown(msg.summary);
-        d.appendChild(summaryEl);
-        messagesEl.appendChild(d);
+      tc.current = null;
+      const text = (msg.summary && msg.summary.trim()) ? msg.summary : '';
+      if (text) {
+        const bubble = document.createElement('div');
+        bubble.className = 'message assistant';
+        const inner = document.createElement('div');
+        inner.className = 'workflow-done-summary';
+        inner.innerHTML = renderMarkdown(text);
+        bubble.appendChild(inner);
+        messagesEl.appendChild(bubble);
       }
       break;
     }
     case 'workflow_stopped': {
+      tc.current = null;
       const d = document.createElement('div');
       d.className = 'workflow-stopped';
       d.textContent = msg.reason || 'Stopped.';
@@ -329,6 +390,7 @@ function renderStoredMessage(msg) {
       break;
     }
     case 'error': {
+      tc.current = null;
       appendMessage(`Error: ${msg.error || 'Unknown'}`, false, false);
       break;
     }
@@ -505,11 +567,13 @@ function onWsMessage(ev) {
 
   if (typ === 'plan') {
     hideTypingBubble();
-    showPlan(msg.plan);
+    const content = ensureWorkflowThinking();
+    showPlan(msg.plan, true, content);
     return;
   }
   if (typ === 'error') {
     hideTypingBubble();
+    currentWorkflowThinking = null;
     appendMessage(`Error: ${msg.error || 'Unknown'}`, false);
     // Also record as error type for history
     activeAgentWorkflow = false;
@@ -520,10 +584,11 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'step_start') {
+    const content = ensureWorkflowThinking();
     const badge = document.createElement('div');
     badge.className = 'step-badge';
     badge.textContent = `Step ${msg.step_id}: ${msg.description || ''}`;
-    messagesEl.appendChild(badge);
+    content.appendChild(badge);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     currentConversationMessages.push({
       type: 'step_start',
@@ -534,11 +599,21 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'step_message' && msg.message) {
-    appendMessage(msg.message, false);
+    const content = ensureWorkflowThinking();
+    const div = document.createElement('div');
+    div.className = 'step-message-inline';
+    div.textContent = msg.message;
+    content.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    currentConversationMessages.push({
+      type: 'step_message',
+      text: msg.message,
+      timestamp: new Date().toISOString(),
+    });
     return;
   }
   if (typ === 'run_command_start') {
-    // cmd_id is provided by the backend; multiple commands can run in parallel.
+    const content = ensureWorkflowThinking();
     const cmdId = msg.cmd_id || `fallback_${Date.now()}`;
 
     const d = document.createElement('details');
@@ -552,7 +627,7 @@ function onWsMessage(ev) {
     const pre = document.createElement('pre');
     pre.className = 'terminal-output';
     d.appendChild(pre);
-    messagesEl.appendChild(d);
+    content.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
     // Register this terminal in the map so stream data can be routed here.
@@ -593,10 +668,11 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'step_complete') {
+    const content = ensureWorkflowThinking();
     const d = document.createElement('div');
     d.className = 'step-badge';
     d.textContent = `Step ${msg.step_id} complete`;
-    messagesEl.appendChild(d);
+    content.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     currentConversationMessages.push({
       type: 'step_complete',
@@ -606,12 +682,12 @@ function onWsMessage(ev) {
     return;
   }
   // step_failed: one step failed independently — does NOT end the workflow.
-  // Sibling parallel steps continue; dependent steps are skipped by the backend.
   if (typ === 'step_failed') {
+    const content = ensureWorkflowThinking();
     const d = document.createElement('div');
     d.className = 'step-badge step-failed';
     d.textContent = `Step ${msg.step_id} failed${msg.reason ? ': ' + msg.reason : ''}`;
-    messagesEl.appendChild(d);
+    content.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     currentConversationMessages.push({
       type: 'step_failed',
@@ -623,23 +699,25 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'workflow_done') {
-    if (msg.summary && msg.summary.trim()) {
-      const d = document.createElement('div');
-      d.className = 'workflow-done';
-      const summaryEl = document.createElement('div');
-      summaryEl.className = 'workflow-done-summary';
-      summaryEl.innerHTML = renderMarkdown(msg.summary);
-      d.appendChild(summaryEl);
-      messagesEl.appendChild(d);
+    const storedContent = (msg.summary && msg.summary.trim()) ? msg.summary : (msg.reply_preview && msg.reply_preview.trim()) || '';
+    if (storedContent) {
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      const inner = document.createElement('div');
+      inner.className = 'workflow-done-summary';
+      inner.innerHTML = renderMarkdown(storedContent);
+      bubble.appendChild(inner);
+      messagesEl.appendChild(bubble);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
+    currentWorkflowThinking = null;
     currentConversationMessages.push({
       type: 'workflow_done',
-      summary: msg.summary || '',
+      summary: storedContent,
       timestamp: new Date().toISOString(),
     });
     saveCurrentConversation();
-    if (msg.summary) extractAndSaveMemory(lastSentUserMessage, msg.summary);
+    if (storedContent) extractAndSaveMemory(lastSentUserMessage, storedContent);
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
     startNextQueuedAgentRequest();
@@ -742,6 +820,7 @@ function onWsMessage(ev) {
   }
   if (typ === 'workflow_stopped') {
     hideTypingBubble();
+    currentWorkflowThinking = null;
     if (!cancellingWorkflow) {
       const d = document.createElement('div');
       d.className = 'workflow-stopped';
@@ -766,7 +845,8 @@ function onWsMessage(ev) {
 
 // ─── Plan display ─────────────────────────────────────────────────────────────
 
-function showPlan(planData, record = true) {
+/** Append plan block to parentEl, or to messagesEl if not provided. */
+function showPlan(planData, record = true, parentEl = null) {
   const block = document.createElement('div');
   block.className = 'plan-block';
   const h4 = document.createElement('h4');
@@ -779,8 +859,9 @@ function showPlan(planData, record = true) {
     ol.appendChild(li);
   });
   block.appendChild(ol);
-  messagesEl.appendChild(block);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  const target = parentEl || messagesEl;
+  target.appendChild(block);
+  if (!parentEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 
   if (record) {
     currentConversationMessages.push({
@@ -789,6 +870,23 @@ function showPlan(planData, record = true) {
       timestamp: new Date().toISOString(),
     });
   }
+}
+
+/** Ensure the current workflow has a collapsible "Thinking…" block; return its content div. */
+function ensureWorkflowThinking() {
+  if (currentWorkflowThinking) return currentWorkflowThinking.content;
+  const details = document.createElement('details');
+  details.className = 'workflow-thinking';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Thinking…';
+  details.appendChild(summary);
+  const content = document.createElement('div');
+  content.className = 'workflow-thinking-content';
+  details.appendChild(content);
+  messagesEl.appendChild(details);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  currentWorkflowThinking = { details, content };
+  return content;
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────────

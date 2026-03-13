@@ -1,18 +1,19 @@
 from backend.engine import LLMEngine
 
-RESPOND_SYSTEM = """You are delivering a response on behalf of an automation agent that has memory and context about the user. Your job is to produce the message specified in the Request, using the Context (including any "User memory") as the source of truth.
+RESPOND_SYSTEM = """You are an AI assistant delivering a response using memory and context about the user. Your job is to produce the message specified in the Request, using the Context (including any "User memory") as the source of truth.
 
-- Deliver the content the Request asks for. If the Request says to tell the user something specific (e.g. "Say: You live in Surat" or "Tell the user they live in X"), output that message clearly and directly.
-- Do NOT say you are a virtual assistant, that you don't have a location, or that you cannot know something — the agent is answering from its memory/context. Speak as the agent delivering remembered or contextual information.
+- Output only the direct answer or message, the way a helpful assistant would say it. Do NOT use meta or self-referential phrasing like "You asked where you live. I answered that you live in Surat." Instead, just say "You live in Surat" (or the equivalent for the Request).
+- Do NOT recap the user's question or say what you are doing ("I'm telling you…", "You asked…"). Just state the answer or information clearly and naturally.
+- Do NOT say you are a virtual assistant, that you don't have a location, or that you cannot know something — the agent is answering from its memory/context. Speak as the assistant delivering remembered or contextual information.
 - Respond in plain text. No approval or confirmation steps. Be concise."""
 
-WORKFLOW_SUMMARY_SYSTEM = """You are a helpful assistant summarizing what an automation agent did for the user. Given the user's original request and a list of steps that were completed (with their output), write a natural-language summary.
+WORKFLOW_SUMMARY_SYSTEM = """You are a helpful assistant summarizing what was done for the user. Given the user's original request and a list of steps that were completed (with their output), write a natural-language summary the way an AI assistant would respond.
 
 <style>
-- Be concise: include only what is necessary (what was asked, what was done, and the outcome).
+- Be concise: include only what is necessary (what was done and the outcome).
 - Assume the user can already see the raw command output in their UI. Do NOT simply repeat the full logs or tables. Instead, explain them in human-friendly terms and, if helpful, highlight just the most important lines or processes.
 - Use as many or as few sentences as needed—no fixed limit.
-- Address the user in second person ("you asked…", "I…").
+- Write as a natural assistant would: direct and helpful. Do NOT use meta phrasing like "You asked X. I did Y." or "You wanted to know… I answered…". Prefer natural flow: "I checked … and found …", "Done. …", "Here's what I found: …", or briefly state the outcome without recapping the question.
 - Output in Markdown for readability: use **bold** for emphasis, `backticks` for commands or technical terms, and short paragraphs or brief bullet lists where it helps readability.
 - No JSON or raw code blocks.
 </style>
@@ -39,6 +40,33 @@ def generate_response(
 # Max chars per step result to send to summary LLM (enough for e.g. top-10 process list)
 SUMMARY_STEP_RESULT_CHARS = 6000
 
+# Prefix used when recording a respond step in completed_results (must match ws_agent)
+RESPOND_RESULT_PREFIX = "Respond: "
+
+
+def is_reply_only_workflow(completed_results: list[tuple[str, str]]) -> bool:
+    """True if every step was a respond (no commands, file ops, etc.)."""
+    if not completed_results:
+        return False
+    return all(
+        result.strip().startswith(RESPOND_RESULT_PREFIX)
+        for _step_id, result in completed_results
+    )
+
+
+def get_reply_only_preview(completed_results: list[tuple[str, str]]) -> str:
+    """For reply-only workflows, return the first response text for context/history."""
+    if not completed_results:
+        return ""
+    first_result = completed_results[0][1]
+    if not first_result.strip().startswith(RESPOND_RESULT_PREFIX):
+        return ""
+    text = first_result[len(RESPOND_RESULT_PREFIX) :].strip()
+    # Remove trailing "..." added by ws_agent when truncating
+    if text.endswith("..."):
+        text = text[:-3].strip()
+    return text
+
 
 def generate_workflow_summary(
     objective: str,
@@ -55,7 +83,7 @@ def generate_workflow_summary(
         for step_id, result in completed_results
     ]
     context = "\n".join(context_lines)
-    prompt = "Summarize what was done and the result for the user in Markdown (concise, only what is necessary)."
+    prompt = "Summarize what was done and the result in Markdown, the way a helpful assistant would (concise, direct; no 'You asked… I did…' phrasing)."
     full = f"{WORKFLOW_SUMMARY_SYSTEM}\n\nUser request: {objective}\n\nSteps completed:\n{context}\n\n{prompt}"
     result = engine.complete(full, provider=provider, model=model, timeout=45)
     return (result.content or "Workflow complete.").strip()
