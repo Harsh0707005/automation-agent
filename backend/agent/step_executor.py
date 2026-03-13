@@ -15,9 +15,10 @@ def get_instructions(
     provider: str,
     model: str | None = None,
     context: dict | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> list[Instruction]:
     import sys
-    full_prompt = f"{STEP_SYSTEM}\n\n{step_user_prompt(goal, objective, completed_results, remaining_descriptions, context=context)}"
+    full_prompt = f"{STEP_SYSTEM}\n\n{step_user_prompt(goal, objective, completed_results, remaining_descriptions, context=context, conversation_history=conversation_history)}"
     print(f"[agent] step LLM call (goal={goal[:50]}...)", flush=True)
     sys.stdout.flush()
     result = engine.complete(full_prompt, provider=provider, model=model, timeout=90)
@@ -39,6 +40,10 @@ def get_instructions(
             args["prompt"] = i.args.prompt
         if i.args.context is not None:
             args["context"] = i.args.context
+        if i.args.question is not None:
+            args["question"] = i.args.question
+        if i.args.options is not None:
+            args["options"] = i.args.options
         out.append(Instruction(tool=i.tool.value, args=args, reason=i.reason))
     return out
 

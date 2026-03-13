@@ -142,6 +142,11 @@ async def ws_endpoint(websocket: WebSocket):
                 fut = getattr(session, "pending_confirmation", None)
                 if fut is not None and not fut.done():
                     fut.set_result(approved)
+            elif typ == "ask_user_response":
+                answer = str((msg.get("payload") or {}).get("answer") or "")
+                fut = getattr(session, "pending_user_input", None)
+                if fut is not None and not fut.done():
+                    fut.set_result(answer)
             elif typ == "command_result":
                 # Command finished on the user's machine; resume the awaiting agent step.
                 payload = msg.get("payload") or {}

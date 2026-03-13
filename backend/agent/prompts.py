@@ -9,6 +9,7 @@ PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant
 6. When the user refers to "the 3rd process", "the first one", "the second one", or similar ordinal phrases, interpret them relative to the most recent relevant list in the recent agent results (e.g. the top-10 process list you just showed), unless the user clearly specifies a different source.
 7. Do NOT add separate "confirm" or "ask for approval" steps before destructive operations. The execution layer handles confirmation automatically before running any destructive command. Just plan the direct action step (e.g. "Delete ~/Desktop/hello.sh").
 8. When a specific file, directory, or resource was mentioned or created in the conversation history, ALWAYS use its exact path/name in the step description. Never use vague references like "the script" or "the file" — write the exact path (e.g. "Delete ~/Desktop/hello_world.sh", not "Delete the bash script").
+9. When the user refers to a project, file, or resource by name only and the exact path is NOT in the conversation history or device context: (a) first plan a discovery step described only as "Search for directories matching the project name using find -iname" — the executor will derive search root from device context (home_dir) and extract keywords from the objective at runtime; (b) then plan an ask_user step that presents only the most specific real matches from the find output; (c) then plan the remaining task steps that use the user's chosen answer. Do NOT end the plan after asking. Do NOT hardcode any paths in the plan description.
 </planning_rules>
 
 <output_format>
@@ -27,6 +28,7 @@ Use only these tools and argument shapes. ALWAYS follow the schema exactly; prov
 4. message: {"message": "informational text to show user"} — short status or note.
 5. respond: {"context": "optional text (e.g. file content or prior output)", "prompt": "what to produce for the user"} — when the user wants explanation, summary, or answer; context can be from a prior read_file or command output.
 6. request_confirmation: {"prompt": "question to show the user explaining a potentially destructive or risky action", "message": "short summary of what will happen if they approve"} — use this when you need explicit user consent before a destructive or irreversible action.
+7. ask_user: {"question": "clear question to ask the user", "options": ["option 1", "option 2", "option 3"]} — pause mid-workflow to get required info from the user. Options MUST be real: extract them from prior command output in completed_results, then rank by relevance to the objective and conversation history (keyword overlap, name similarity). Present only the top 2–4 most specific confirmed values — prefer leaf directories over parent containers. Never invent or guess — every option must be verifiable in a completed step's output. The answer is stored and used by all subsequent steps.
 
 Do not refer to internal tool names in the "reason" field; use brief user-facing explanations (e.g. "Find processes on port 3001").
 </tool_schema>
@@ -38,6 +40,8 @@ Do not refer to internal tool names in the "reason" field; use brief user-facing
 4. Keep instructions minimal and ordered. One run_command per concrete command; combine only when a single compound command is appropriate.
 5. For destructive actions (e.g. `rm -rf`, deleting user data or config files, force-killing processes, modifying system-wide settings, installing/uninstalling system software), emit the run_command directly. The execution layer will automatically intercept and ask for user confirmation before running it — do NOT emit a separate request_confirmation instruction before the run_command, as that causes a redundant double-prompt.
 6. For file/directory deletion, ALWAYS use the exact path when it is known from the goal or conversation context. NEVER use shell wildcards (e.g. `*.sh`, `*`) unless the user explicitly asked to delete multiple files matching a pattern. If the goal says "delete ~/Desktop/hello_world.sh", the command must be `rm ~/Desktop/hello_world.sh`, not `rm ~/Desktop/*.sh`.
+7a. When the goal is a directory/file search: extract 1–2 short keywords from the overall objective, determine the search root from device context (use home_dir if available, otherwise ~), then emit a `run_command` using `find <home_dir> -type d \( -iname "*<kw1>*" -o -iname "*<kw2>*" \) 2>/dev/null | head -20`. No maxdepth — traverse as deep as needed. Do NOT hardcode any specific paths or directory names in the command. If nothing is found, recovery should try a single broader keyword or a different root, still scoped to this step only.
+7b. When the goal is to ask the user to pick or clarify something AND a prior discovery step has run: emit an `ask_user` instruction. To build smart ranked options: (1) read the real output from completed_results, (2) score each entry against keywords in the overall objective and conversation history — prefer deeper, more specific leaf matches over parent containers, (3) select the top 2–4 highest-scoring real entries. Never invent or assume paths. If no prior discovery step has run, emit a `run_command` search first.
 </execution_rules>
 
 <output_format>
@@ -90,12 +94,22 @@ def step_user_prompt(
     completed_results: list[tuple[str, str]],
     remaining_descriptions: list[str],
     context: dict | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> str:
     lines: list[str] = []
     if context:
         lines.append("Device context:")
         for k, v in sorted(context.items()):
             lines.append(f"  {k}: {v}")
+        lines.append("")
+    if conversation_history:
+        lines.append("Conversation history (for context when ranking options):")
+        for turn in conversation_history[-6:]:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            content = turn["content"][:300]
+            if len(turn["content"]) > 300:
+                content += "..."
+            lines.append(f"  {role}: {content}")
         lines.append("")
     lines.extend(
         [
@@ -106,10 +120,10 @@ def step_user_prompt(
     if completed_results:
         lines.append("Completed steps (for context):")
         for step_id, result in completed_results:
-            lines.append(f"  Step {step_id}: {result[:300]}{'...' if len(result) > 300 else ''}")
+            lines.append(f"  Step {step_id}: {result[:800]}{'...' if len(result) > 800 else ''}")
     if remaining_descriptions:
         lines.append("Remaining steps (do not do these now): " + "; ".join(remaining_descriptions))
-    lines.append("\nOutput the JSON instructions for the current goal only. Follow the tool_schema and execution_rules. If the goal contains an example command or exact value (e.g. port number, path), use it EXACTLY in your instructions.")
+    lines.append("\nOutput the JSON instructions for the current goal only. Follow the tool_schema and execution_rules. If the goal contains an example command or exact value (e.g. port number, path), use it EXACTLY in your instructions. IMPORTANT: if emitting ask_user, derive options ONLY from real output visible in the completed steps above, ranked by relevance to the objective and conversation history — never hallucinate paths or values.")
     return "\n".join(lines)
 
 
@@ -125,8 +139,11 @@ SINGLE_COMMAND_FALLBACK = """Convert the following step goal into exactly one sh
 VERIFY_SYSTEM = """You are a verifier for a desktop automation agent. Given the short-term goal and the command that was run (plus its stdout, stderr, return code), decide if this step is complete.
 
 <rules>
-1. Return step_complete true if the command succeeded and the goal is achieved, or no further commands are needed for this step.
-2. Return step_complete false if the goal is not yet achieved or the command failed in a way that requires more work.
+1. Return step_complete true if the command succeeded (return code 0) and produced output consistent with the goal, or no further commands are needed for this step.
+2. Return step_complete false ONLY if the command genuinely failed (non-zero exit, meaningful error in stderr) in a way that requires more work.
+3. For listing/discovery steps (ls, find, cat, etc.): if return code is 0 and stdout has content, return step_complete true. The next plan step handles selection from the results.
+4. If return code is 0 but stdout is empty (e.g. a name-based find found nothing), return step_complete false so recovery can try broader keywords — but recovery must still stay scoped to the search step, never jump to the main task.
+5. Never mark a step incomplete just because the output doesn't explicitly confirm the final goal. Intermediate steps produce partial results by design.
 </rules>
 
 <output_format>
@@ -151,9 +168,10 @@ Use only: run_command {"command": "..."}, message {"message": "..."}, request_co
 <recovery_rules>
 1. Do not repeat the same failed command. Prefer a small number of targeted recovery steps (e.g. different CLI approach, check permissions, retry with sudo).
 2. If recovery is impossible or too risky, return abort true with a brief reason. Otherwise return recovery_instructions (one or more run_command entries).
-3. If the original goal specified a value (e.g. port number), preserve it in recovery commands where relevant.
-4. Platform differences: On macOS, `ps` does not support GNU-style options like `--sort=-%cpu`. Use portable alternatives instead, e.g. `ps aux | sort -rn -k 3 | head -11` (sort by CPU column) or `ps -eo pid,pcpu,comm -r | head -11`. Prefer commands that work on both macOS and Linux when stderr shows "illegal option" or "usage:".
-5. For destructive recovery options (e.g. deleting files, killing long-running processes, altering system configuration), do not execute them automatically. Prefer to suggest safer diagnostic commands first. If a destructive action is truly required, output a message or request_confirmation that clearly explains the risk and asks the user to confirm before you propose a run_command, and only include such commands when the user has explicitly asked for that level of intervention.
+3. SCOPE: Recovery must ONLY fix the current failing step. NEVER skip ahead to achieve the overall objective or execute work belonging to future plan steps (e.g. do not run the actual task command when the current step was only meant to discover/list directories). If the current step is a discovery/listing step, recovery commands must also only list or probe — never act on what is found.
+4. If the original goal specified a value (e.g. port number), preserve it in recovery commands where relevant.
+5. Platform differences: On macOS, `ps` does not support GNU-style options like `--sort=-%cpu`. Use portable alternatives instead, e.g. `ps aux | sort -rn -k 3 | head -11` (sort by CPU column) or `ps -eo pid,pcpu,comm -r | head -11`. Prefer commands that work on both macOS and Linux when stderr shows "illegal option" or "usage:".
+6. For destructive recovery options (e.g. deleting files, killing long-running processes, altering system configuration), do not execute them automatically. Prefer to suggest safer diagnostic commands first. If a destructive action is truly required, output a message or request_confirmation that clearly explains the risk and asks the user to confirm before you propose a run_command, and only include such commands when the user has explicitly asked for that level of intervention.
 </recovery_rules>
 
 <output_format>

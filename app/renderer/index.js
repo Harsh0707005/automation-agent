@@ -288,6 +288,65 @@ function onWsMessage(ev) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return;
   }
+  if (typ === 'ask_user_required') {
+    const block = document.createElement('div');
+    block.className = 'ask-user-block';
+
+    const questionEl = document.createElement('div');
+    questionEl.className = 'ask-user-question';
+    questionEl.textContent = msg.question || 'I need some information to continue.';
+    block.appendChild(questionEl);
+
+    const options = Array.isArray(msg.options) ? msg.options : [];
+
+    function submitAnswer(answer) {
+      if (!answer.trim()) return;
+      // Disable all interactive elements
+      block.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+      // Echo the chosen answer as a user bubble
+      appendMessage(answer.trim());
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ask_user_response', payload: { answer: answer.trim() } }));
+      }
+    }
+
+    if (options.length > 0) {
+      const optionsEl = document.createElement('div');
+      optionsEl.className = 'ask-user-options';
+      options.forEach((opt) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ask-user-option-btn';
+        btn.textContent = opt;
+        btn.onclick = () => submitAnswer(opt);
+        optionsEl.appendChild(btn);
+      });
+      block.appendChild(optionsEl);
+    }
+
+    const customRow = document.createElement('div');
+    customRow.className = 'ask-user-custom-row';
+    const customInput = document.createElement('input');
+    customInput.type = 'text';
+    customInput.className = 'ask-user-custom-input';
+    customInput.placeholder = 'Or type a custom answer…';
+    customInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitAnswer(customInput.value);
+    });
+    const customBtn = document.createElement('button');
+    customBtn.type = 'button';
+    customBtn.className = 'ask-user-custom-btn';
+    customBtn.textContent = 'Submit';
+    customBtn.onclick = () => submitAnswer(customInput.value);
+    customRow.appendChild(customInput);
+    customRow.appendChild(customBtn);
+    block.appendChild(customRow);
+
+    messagesEl.appendChild(block);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    customInput.focus();
+    return;
+  }
   if (typ === 'workflow_stopped') {
     const d = document.createElement('div');
     d.className = 'workflow-stopped';

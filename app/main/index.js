@@ -92,6 +92,9 @@ function getDeviceContext() {
     }
   }
 
+  ctx.home_dir = os.homedir();
+  ctx.cwd = process.cwd();
+
   return ctx;
 }
 

@@ -11,6 +11,7 @@ class ToolType(str, Enum):
     REQUEST_CONFIRMATION = "request_confirmation"
     MESSAGE = "message"
     RESPOND = "respond"
+    ASK_USER = "ask_user"
 
 
 class PlanStepSchema(BaseModel):
@@ -30,6 +31,8 @@ class InstructionArgs(BaseModel):
     message: str | None = None
     prompt: str | None = None
     context: str | None = None
+    question: str | None = None
+    options: list[str] | None = None
 
 
 class InstructionSchema(BaseModel):

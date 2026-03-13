@@ -28,6 +28,8 @@ class AgentSession:
     pending_confirmation: asyncio.Future | None = None
     # For awaiting command results coming back from the Electron client
     pending_command_result: asyncio.Future | None = None
+    # For awaiting mid-workflow user input (ask_user tool)
+    pending_user_input: asyncio.Future | None = None
     # Persistent across runs — never reset between requests
     conversation_history: list[dict] = field(default_factory=list)
     last_summary: str = ""
@@ -86,6 +88,7 @@ async def run_agent_ws(send_fn, session: AgentSession):
                         provider=session.provider,
                         model=session.model,
                         context=session.context,
+                        conversation_history=list(session.conversation_history),
                     )
                 )
             except Exception:
@@ -249,6 +252,23 @@ async def run_agent_ws(send_fn, session: AgentSession):
                 msg = args.get("message", "") or args.get("prompt", "") or ""
                 if msg:
                     await send_fn({"type": "step_message", "message": msg})
+                session.instruction_index += 1
+                continue
+
+            if inst.tool == "ask_user":
+                question = args.get("question", "") or "I need some information to continue."
+                options = args.get("options") or []
+                await send_fn({
+                    "type": "ask_user_required",
+                    "step_id": step.id,
+                    "question": question,
+                    "options": options,
+                })
+                loop = asyncio.get_event_loop()
+                session.pending_user_input = loop.create_future()
+                answer = await session.pending_user_input
+                session.pending_user_input = None
+                session.completed_results.append((step.id, f"User provided: {answer}"))
                 session.instruction_index += 1
                 continue
 
