@@ -118,12 +118,14 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'run_command_start') {
-    const d = document.createElement('div');
-    d.className = 'command-result-block terminal-block';
-    const heading = document.createElement('div');
+    const d = document.createElement('details');
+    d.className = 'command-result-block terminal-block terminal-collapsible';
+    const summary = document.createElement('summary');
+    const heading = document.createElement('span');
     heading.className = 'terminal-heading';
     heading.textContent = `Running: ${msg.command || ''}`;
-    d.appendChild(heading);
+    summary.appendChild(heading);
+    d.appendChild(summary);
     const pre = document.createElement('pre');
     pre.className = 'terminal-output';
     d.appendChild(pre);
