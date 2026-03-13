@@ -1,5 +1,6 @@
 import asyncio
 import shlex
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from backend.engine import LLMEngine
@@ -39,6 +40,45 @@ class AgentSession:
     # Persistent across runs
     conversation_history: list[dict] = field(default_factory=list)
     last_summary: str = ""
+
+
+def _snapshot_paths_for_command(command: str) -> list[str]:
+    """
+    For commands that destroy or overwrite files (rm, mv, etc.), return the
+    absolute paths of files that should be snapshotted before execution.
+    Only regular files are included — directories are skipped.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.strip().split()
+    if not parts:
+        return []
+
+    verb = parts[0].lower()
+    candidates: list[str] = []
+
+    if verb == "rm":
+        # Collect all non-flag arguments after 'rm'
+        for part in parts[1:]:
+            if part.startswith("-"):
+                continue
+            candidates.append(part)
+    elif verb == "mv":
+        # Source is the second-to-last argument (last is destination)
+        non_flags = [p for p in parts[1:] if not p.startswith("-")]
+        if len(non_flags) >= 2:
+            candidates.append(non_flags[0])  # snapshot the source file
+
+    paths = []
+    for raw in candidates:
+        try:
+            resolved = Path(raw).expanduser().resolve()
+            if resolved.is_file():
+                paths.append(str(resolved))
+        except Exception:
+            pass
+    return paths
 
 
 def _is_potentially_destructive_command(command: str) -> bool:
@@ -168,6 +208,20 @@ async def run_agent_ws(send_fn, session: AgentSession):
                             })
                             return False
 
+                    # Snapshot any files that this command would destroy/overwrite
+                    # so the renderer can offer a revert action later.
+                    snap_paths = _snapshot_paths_for_command(cmd)
+                    for snap_path in snap_paths:
+                        _p = snap_path  # bind loop variable for lambda capture
+                        snap_content, snap_err = await run_sync(lambda: do_read_file(_p))
+                        if snap_err is None:
+                            await send_fn({
+                                "type": "file_snapshot",
+                                "path": snap_path,
+                                "original_content": snap_content,
+                                "existed": True,
+                            })
+
                     # Run the command on the client machine
                     cmd_id = next_cmd_id(step.id)
                     cmd_fut = loop.create_future()
@@ -271,6 +325,20 @@ async def run_agent_ws(send_fn, session: AgentSession):
                     path_val = args.get("path", "")
                     content = args.get("content", "")
                     if path_val:
+                        # Snapshot the current file state before overwriting so the
+                        # renderer can offer a revert action.
+                        snap_content, snap_err = await run_sync(lambda: do_read_file(path_val))
+                        existed = snap_err is None
+                        try:
+                            resolved_path = str(Path(path_val).expanduser().resolve())
+                        except Exception:
+                            resolved_path = path_val
+                        await send_fn({
+                            "type": "file_snapshot",
+                            "path": resolved_path,
+                            "original_content": snap_content if existed else "",
+                            "existed": existed,
+                        })
                         err = await run_sync(lambda: do_write_file(path_val, content))
                         if err:
                             await send_fn({"type": "step_message", "message": f"Write failed: {err}"})

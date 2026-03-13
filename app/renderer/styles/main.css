@@ -1046,6 +1046,116 @@ body {
   background: #4b5563;
 }
 
+/* ─── Revert button ────────────────────────────────────────────────────────── */
+
+/* Outer wrapper aligns revert button + user bubble side-by-side */
+.user-msg-outer {
+  align-self: flex-end;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* Override the bubble's standalone alignment — wrapper handles it now */
+.user-msg-outer .message.user {
+  align-self: auto;
+}
+
+.revert-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.user-msg-outer:hover .revert-btn {
+  opacity: 1;
+}
+
+.revert-btn:hover {
+  color: #e5e5e5;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ─── Revert modal ─────────────────────────────────────────────────────────── */
+
+.revert-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.revert-modal {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 24px;
+  width: 400px;
+  max-width: 90vw;
+}
+
+.revert-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e5e5e5;
+  margin-bottom: 10px;
+}
+
+.revert-modal-desc {
+  font-size: 13px;
+  color: #9ca3af;
+  line-height: 1.55;
+  margin-bottom: 20px;
+}
+
+.revert-modal-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.revert-modal-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #404040;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.revert-modal-btn-cancel {
+  background: transparent;
+  color: #9ca3af;
+}
+
+.revert-modal-btn-cancel:hover {
+  background: #262626;
+  color: #e5e5e5;
+}
+
+.revert-modal-btn-confirm {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+
+.revert-modal-btn-confirm:hover {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
 .ask-user-custom-btn:disabled {
   opacity: 0.5;
   cursor: default;

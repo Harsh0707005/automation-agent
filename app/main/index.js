@@ -108,6 +108,12 @@ function getMemoryFile() {
   return path.join(app.getPath('userData'), 'memory.json');
 }
 
+function getSnapshotsDir() {
+  const dir = path.join(app.getPath('userData'), 'snapshots');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function readMemory() {
   const file = getMemoryFile();
   if (!fs.existsSync(file)) return [];
@@ -177,6 +183,46 @@ app.whenReady().then(() => {
     const updated = readMemory().filter((c) => c.id !== id);
     fs.writeFileSync(getMemoryFile(), JSON.stringify(updated), 'utf8');
     return true;
+  });
+
+  ipcMain.handle('save-snapshots', (_, messageId, newSnapshots) => {
+    const dir = getSnapshotsDir();
+    const file = path.join(dir, `${messageId}.json`);
+    let existing = [];
+    if (fs.existsSync(file)) {
+      try { existing = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_e) {}
+    }
+    fs.writeFileSync(file, JSON.stringify([...existing, ...newSnapshots]), 'utf8');
+    return true;
+  });
+
+  ipcMain.handle('get-snapshots', (_, messageId) => {
+    const file = path.join(getSnapshotsDir(), `${messageId}.json`);
+    if (!fs.existsSync(file)) return [];
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_e) { return []; }
+  });
+
+  ipcMain.handle('delete-snapshots', (_, messageId) => {
+    const file = path.join(getSnapshotsDir(), `${messageId}.json`);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return true;
+  });
+
+  ipcMain.handle('restore-file-snapshot', (_, filePath, originalContent, existed) => {
+    try {
+      if (!existed) {
+        // File was newly created by the agent — delete it
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } else {
+        // Restore to the original content
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(filePath, originalContent, 'utf8');
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
 
   ipcMain.handle('run-interactive-command', async (event, command, cmdId) => {

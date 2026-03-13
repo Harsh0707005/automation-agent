@@ -70,6 +70,9 @@ let activeAgentWorkflow = false;
 let queuedAgentRequests = [];
 let nextQueueId = 1;
 let cancellingWorkflow = false;
+// Tracks the msgId of the user bubble that triggered the currently-running workflow,
+// so incoming file_snapshot messages can be stored against the right message.
+let currentWorkflowMessageId = null;
 
 // ─── Conversation state ───────────────────────────────────────────────────────
 
@@ -246,6 +249,9 @@ async function openConversation(id) {
     renderStoredMessage(msg, thinkingRef);
   }
 
+  // Re-attach revert buttons for any user messages that have stored snapshots.
+  restoreRevertButtons();
+
   await refreshSidebar();
   input.focus();
 }
@@ -266,7 +272,7 @@ function renderStoredMessage(msg, thinkingContainerRef) {
   const tc = thinkingContainerRef;
   switch (msg.type) {
     case 'user':
-      appendMessage(msg.text, true, false);
+      appendMessage(msg.text, true, false, msg.msgId || null);
       tc.current = null;
       break;
     case 'assistant':
@@ -420,12 +426,42 @@ if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'functio
  * @param {string} text
  * @param {boolean} isUser
  * @param {boolean} record - whether to record into conversation history (default true)
+ * @param {string|null} existingMsgId - re-use a stored msgId when restoring from history
+ * @returns {string|null} msgId for user messages, null for assistant messages
  */
-function appendMessage(text, isUser = true, record = true) {
-  const div = document.createElement('div');
-  div.className = `message ${isUser ? 'user' : 'assistant'}`;
-  div.textContent = text;
-  messagesEl.appendChild(div);
+function appendMessage(text, isUser = true, record = true, existingMsgId = null) {
+  const msgId = isUser ? (existingMsgId || generateId()) : null;
+
+  let elementToAppend;
+
+  if (isUser) {
+    // Wrap user bubble so we can position the revert button to its left.
+    const wrapper = document.createElement('div');
+    wrapper.className = 'user-msg-outer';
+
+    const revertBtn = document.createElement('button');
+    revertBtn.className = 'revert-btn';
+    revertBtn.title = 'Revert to before this message';
+    revertBtn.style.display = 'none'; // revealed only when snapshots exist
+    revertBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 7v6h6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 13a9 9 0 1 0-3 6.3L21 16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    revertBtn.onclick = (e) => { e.stopPropagation(); showRevertModal(msgId, text); };
+
+    const div = document.createElement('div');
+    div.className = 'message user';
+    div.textContent = text;
+    div.dataset.msgId = msgId;
+
+    wrapper.appendChild(revertBtn);
+    wrapper.appendChild(div);
+    elementToAppend = wrapper;
+  } else {
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.textContent = text;
+    elementToAppend = div;
+  }
+
+  messagesEl.appendChild(elementToAppend);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
   if (record) {
@@ -435,10 +471,13 @@ function appendMessage(text, isUser = true, record = true) {
     currentConversationMessages.push({
       type: isUser ? 'user' : 'assistant',
       text,
+      msgId: isUser ? msgId : undefined,
       timestamp: new Date().toISOString(),
     });
     saveCurrentConversation();
   }
+
+  return msgId;
 }
 
 function showTypingBubble() {
@@ -527,7 +566,7 @@ async function startNextQueuedAgentRequest() {
   if (!next) return;
 
   lastSentUserMessage = next.text;
-  appendMessage(next.text);
+  currentWorkflowMessageId = appendMessage(next.text);
   maybeGenerateConversationTitleInBackground(next.text, next.provider || null, next.model || null);
   activeAgentWorkflow = true;
   cancellingWorkflow = false;
@@ -564,6 +603,18 @@ function onWsMessage(ev) {
   }
   const typ = msg.type;
   if (cancellingWorkflow && typ !== 'workflow_stopped') return;
+
+  // Store file snapshots against the active user message for revert support.
+  if (typ === 'file_snapshot') {
+    if (currentWorkflowMessageId && window.electronAPI?.saveSnapshots) {
+      window.electronAPI.saveSnapshots(currentWorkflowMessageId, [{
+        path: msg.path,
+        original_content: msg.original_content,
+        existed: msg.existed,
+      }]);
+    }
+    return;
+  }
 
   if (typ === 'plan') {
     hideTypingBubble();
@@ -720,6 +771,9 @@ function onWsMessage(ev) {
     if (storedContent) extractAndSaveMemory(lastSentUserMessage, storedContent);
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
+    const wfMsgIdDone = currentWorkflowMessageId;
+    currentWorkflowMessageId = null;
+    if (wfMsgIdDone) (async () => { await maybeShowRevertButton(wfMsgIdDone); })();
     startNextQueuedAgentRequest();
     input.focus();
     updateSendState();
@@ -836,6 +890,9 @@ function onWsMessage(ev) {
     }
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
+    const wfMsgIdStopped = currentWorkflowMessageId;
+    currentWorkflowMessageId = null;
+    if (wfMsgIdStopped) (async () => { await maybeShowRevertButton(wfMsgIdStopped); })();
     startNextQueuedAgentRequest();
     input.focus();
     updateSendState();
@@ -887,6 +944,144 @@ function ensureWorkflowThinking() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
   currentWorkflowThinking = { details, content };
   return content;
+}
+
+// ─── Revert ───────────────────────────────────────────────────────────────────
+
+/**
+ * Show the revert button on a user bubble if snapshots exist for that msgId.
+ */
+async function maybeShowRevertButton(msgId) {
+  if (!msgId || !window.electronAPI?.getSnapshots) return;
+  const snapshots = await window.electronAPI.getSnapshots(msgId);
+  if (!snapshots || snapshots.length === 0) return;
+  const bubble = messagesEl.querySelector(`.message.user[data-msg-id="${CSS.escape(msgId)}"]`);
+  if (!bubble) return;
+  const btn = bubble.parentElement?.querySelector('.revert-btn');
+  if (btn) btn.style.display = '';
+}
+
+/**
+ * After loading a stored conversation, re-attach revert buttons for any user
+ * messages whose snapshots are still on disk.
+ */
+function restoreRevertButtons() {
+  const bubbles = messagesEl.querySelectorAll('.message.user[data-msg-id]');
+  for (const bubble of bubbles) {
+    const msgId = bubble.dataset.msgId;
+    if (msgId) (async () => { await maybeShowRevertButton(msgId); })();
+  }
+}
+
+/**
+ * Show a confirmation modal before reverting.
+ */
+function showRevertModal(msgId, text) {
+  const overlay = document.createElement('div');
+  overlay.className = 'revert-modal-overlay';
+
+  const modal = document.createElement('div');
+  modal.className = 'revert-modal';
+
+  const title = document.createElement('div');
+  title.className = 'revert-modal-title';
+  title.textContent = 'Revert changes?';
+
+  const desc = document.createElement('div');
+  desc.className = 'revert-modal-desc';
+  desc.textContent = 'All files modified during this request will be restored to their previous state. The conversation from this point will be removed and the original message will be placed back in the input.';
+
+  const buttons = document.createElement('div');
+  buttons.className = 'revert-modal-buttons';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'revert-modal-btn revert-modal-btn-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => document.body.removeChild(overlay);
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className = 'revert-modal-btn revert-modal-btn-confirm';
+  confirmBtn.textContent = 'Yes, Revert';
+  confirmBtn.onclick = async () => {
+    document.body.removeChild(overlay);
+    await performRevert(msgId, text);
+  };
+
+  buttons.appendChild(cancelBtn);
+  buttons.appendChild(confirmBtn);
+  modal.appendChild(title);
+  modal.appendChild(desc);
+  modal.appendChild(buttons);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Close on backdrop click
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) document.body.removeChild(overlay);
+  });
+}
+
+/**
+ * Restore file snapshots, truncate conversation history and DOM from msgId
+ * onward, then place the original message text back into the input.
+ */
+async function performRevert(msgId, text) {
+  if (activeAgentWorkflow) return; // refuse while a workflow is running
+
+  // 1. Restore each snapshotted file.
+  if (window.electronAPI?.getSnapshots && window.electronAPI?.restoreFileSnapshot) {
+    const snapshots = await window.electronAPI.getSnapshots(msgId);
+    if (snapshots && snapshots.length > 0) {
+      for (const snap of snapshots) {
+        await window.electronAPI.restoreFileSnapshot(snap.path, snap.original_content, snap.existed);
+      }
+    }
+  }
+
+  // 2. Delete snapshots for this message and all later user messages.
+  if (window.electronAPI?.deleteSnapshots) {
+    const msgIdx = currentConversationMessages.findIndex(
+      (m) => m.type === 'user' && m.msgId === msgId,
+    );
+    if (msgIdx >= 0) {
+      const laterIds = currentConversationMessages
+        .slice(msgIdx + 1)
+        .filter((m) => m.type === 'user' && m.msgId)
+        .map((m) => m.msgId);
+      for (const id of laterIds) await window.electronAPI.deleteSnapshots(id);
+    }
+    await window.electronAPI.deleteSnapshots(msgId);
+  }
+
+  // 3. Truncate conversation messages — drop the reverted user message and everything after.
+  const msgIdx = currentConversationMessages.findIndex(
+    (m) => m.type === 'user' && m.msgId === msgId,
+  );
+  if (msgIdx >= 0) {
+    currentConversationMessages = currentConversationMessages.slice(0, msgIdx);
+  }
+
+  // 4. Remove DOM elements from the user bubble's wrapper onward.
+  const bubble = messagesEl.querySelector(`.message.user[data-msg-id="${CSS.escape(msgId)}"]`);
+  if (bubble) {
+    // The bubble lives inside a .user-msg-outer wrapper — remove from wrapper onward.
+    const target = bubble.closest('.user-msg-outer') || bubble;
+    const children = Array.from(messagesEl.children);
+    const startIdx = children.indexOf(target);
+    if (startIdx >= 0) {
+      for (let i = children.length - 1; i >= startIdx; i--) {
+        messagesEl.removeChild(children[i]);
+      }
+    }
+  }
+
+  // 5. Persist the truncated conversation.
+  await saveCurrentConversation();
+
+  // 6. Place the original message back in the input.
+  input.value = text;
+  input.focus();
+  updateSendState();
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────────
@@ -1168,7 +1363,7 @@ async function send() {
 
   if (!activeAgentWorkflow) {
     lastSentUserMessage = text;
-    appendMessage(text);
+    currentWorkflowMessageId = appendMessage(text);
     // First user message in a new conversation: kick off background title generation.
     maybeGenerateConversationTitleInBackground(text, selected.provider, selected.model);
     activeAgentWorkflow = true;

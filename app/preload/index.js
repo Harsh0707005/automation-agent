@@ -18,4 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveMemory: (chunks) => ipcRenderer.invoke('save-memory', chunks),
   addMemoryChunks: (chunks) => ipcRenderer.invoke('add-memory-chunks', chunks),
   deleteMemoryChunk: (id) => ipcRenderer.invoke('delete-memory-chunk', id),
+  // Snapshots for revert support
+  saveSnapshots: (messageId, snapshots) => ipcRenderer.invoke('save-snapshots', messageId, snapshots),
+  getSnapshots: (messageId) => ipcRenderer.invoke('get-snapshots', messageId),
+  deleteSnapshots: (messageId) => ipcRenderer.invoke('delete-snapshots', messageId),
+  restoreFileSnapshot: (filePath, originalContent, existed) => ipcRenderer.invoke('restore-file-snapshot', filePath, originalContent, existed),
 });
