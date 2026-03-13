@@ -145,6 +145,42 @@ function onWsMessage(ev) {
     input.focus();
     return;
   }
+  if (typ === 'confirmation_required') {
+    const block = document.createElement('div');
+    block.className = 'confirmation-block';
+    const text = document.createElement('div');
+    text.className = 'confirmation-text';
+    text.textContent = msg.prompt || 'Do you approve this action?';
+    block.appendChild(text);
+    const buttons = document.createElement('div');
+    buttons.className = 'confirmation-buttons';
+    const yesBtn = document.createElement('button');
+    yesBtn.type = 'button';
+    yesBtn.textContent = 'Yes';
+    const noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.textContent = 'No';
+    yesBtn.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'confirmation_response', payload: { approved: true } }));
+      }
+      yesBtn.disabled = true;
+      noBtn.disabled = true;
+    };
+    noBtn.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'confirmation_response', payload: { approved: false } }));
+      }
+      yesBtn.disabled = true;
+      noBtn.disabled = true;
+    };
+    buttons.appendChild(yesBtn);
+    buttons.appendChild(noBtn);
+    block.appendChild(buttons);
+    messagesEl.appendChild(block);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return;
+  }
   if (typ === 'workflow_stopped') {
     const d = document.createElement('div');
     d.className = 'workflow-stopped';

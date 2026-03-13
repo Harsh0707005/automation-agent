@@ -372,3 +372,42 @@ body {
   border: 1px solid #f87171;
   color: #fecaca;
 }
+
+.confirmation-block {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #1f2937;
+  border: 1px solid #4b5563;
+  color: #e5e7eb;
+  font-size: 14px;
+}
+
+.confirmation-text {
+  margin-bottom: 8px;
+}
+
+.confirmation-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.confirmation-buttons button {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #4b5563;
+  background: #111827;
+  color: #e5e7eb;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.confirmation-buttons button:hover:not(:disabled) {
+  background: #374151;
+}
+
+.confirmation-buttons button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

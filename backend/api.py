@@ -162,10 +162,15 @@ async def ws_endpoint(websocket: WebSocket):
                     )
                     session.plan = planned
                     await send({"type": "plan", "plan": planned.model_dump()})
-                    # Start execution immediately; no approval step
-                    await run_agent_ws(send, session)
+                    # Start execution in background so we can still receive confirmations
+                    asyncio.create_task(run_agent_ws(send, session))
                 except Exception as e:
                     await send({"type": "error", "error": str(e)})
+            elif typ == "confirmation_response":
+                approved = bool((msg.get("payload") or {}).get("approved"))
+                fut = getattr(session, "pending_confirmation", None)
+                if fut is not None and not fut.done():
+                    fut.set_result(approved)
     except Exception:
         pass
 

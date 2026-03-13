@@ -7,6 +7,7 @@ PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant
 4. If the user specifies a value exactly (e.g. a port number, a path, a command name), preserve that value in the step description so the executor can use it.
 5. You may see recent agent results (previous steps the agent already ran) in the context. If the new user request can be satisfied by *explaining or reusing those results* (e.g. "explain the first process from the list you just showed"), prefer planning *explanation-only* steps (using text responses) instead of re-running similar commands.
 6. When the user refers to "the 3rd process", "the first one", "the second one", or similar ordinal phrases, interpret them relative to the most recent relevant list in the recent agent results (e.g. the top-10 process list you just showed), unless the user clearly specifies a different source.
+7. Do NOT add separate "confirm" or "ask for approval" steps before destructive operations. The execution layer handles confirmation automatically before running any destructive command. Just plan the direct action step (e.g. "Delete ~/Desktop/hello.sh").
 </planning_rules>
 
 <output_format>
@@ -24,8 +25,9 @@ Use only these tools and argument shapes. ALWAYS follow the schema exactly; prov
 3. write_file: {"path": "...", "content": "..."} — to write or overwrite a file.
 4. message: {"message": "informational text to show user"} — short status or note.
 5. respond: {"context": "optional text (e.g. file content or prior output)", "prompt": "what to produce for the user"} — when the user wants explanation, summary, or answer; context can be from a prior read_file or command output.
+6. request_confirmation: {"prompt": "question to show the user explaining a potentially destructive or risky action", "message": "short summary of what will happen if they approve"} — use this when you need explicit user consent before a destructive or irreversible action.
 
-No approval or confirmation steps. Do not refer to internal tool names in the "reason" field; use brief user-facing explanations (e.g. "Find processes on port 3001").
+Do not refer to internal tool names in the "reason" field; use brief user-facing explanations (e.g. "Find processes on port 3001").
 </tool_schema>
 
 <execution_rules>
@@ -33,6 +35,7 @@ No approval or confirmation steps. Do not refer to internal tool names in the "r
 2. If the goal or plan contains an example command or exact phrase (e.g. "lsof -i :3001 -t" or "kill <PID>"), use that command or phrase in your instructions—do not substitute a different command unless necessary.
 3. If the user specifies a value (e.g. port 3001, path /tmp/foo), use that value EXACTLY in the command or path. Do not make up values for required parameters.
 4. Keep instructions minimal and ordered. One run_command per concrete command; combine only when a single compound command is appropriate.
+5. For destructive actions (e.g. `rm -rf`, deleting user data or config files, force-killing processes, modifying system-wide settings, installing/uninstalling system software), emit the run_command directly. The execution layer will automatically intercept and ask for user confirmation before running it — do NOT emit a separate request_confirmation instruction before the run_command, as that causes a redundant double-prompt.
 </execution_rules>
 
 <output_format>
@@ -138,6 +141,7 @@ Use only: run_command {"command": "..."}, message {"message": "..."}, request_co
 2. If recovery is impossible or too risky, return abort true with a brief reason. Otherwise return recovery_instructions (one or more run_command entries).
 3. If the original goal specified a value (e.g. port number), preserve it in recovery commands where relevant.
 4. Platform differences: On macOS, `ps` does not support GNU-style options like `--sort=-%cpu`. Use portable alternatives instead, e.g. `ps aux | sort -rn -k 3 | head -11` (sort by CPU column) or `ps -eo pid,pcpu,comm -r | head -11`. Prefer commands that work on both macOS and Linux when stderr shows "illegal option" or "usage:".
+5. For destructive recovery options (e.g. deleting files, killing long-running processes, altering system configuration), do not execute them automatically. Prefer to suggest safer diagnostic commands first. If a destructive action is truly required, output a message or request_confirmation that clearly explains the risk and asks the user to confirm before you propose a run_command, and only include such commands when the user has explicitly asked for that level of intervention.
 </recovery_rules>
 
 <output_format>

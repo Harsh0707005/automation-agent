@@ -1,4 +1,5 @@
 import asyncio
+import shlex
 from dataclasses import dataclass, field
 
 from backend.engine import LLMEngine
@@ -25,6 +26,37 @@ class AgentSession:
     completed_results: list[tuple[str, str]] = field(default_factory=list)
     last_read_content: str = ""
     state: str = "idle"
+    pending_confirmation: asyncio.Future | None = None
+
+
+def _is_potentially_destructive_command(command: str) -> bool:
+    """Heuristic to detect obviously destructive shell commands."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.strip().split()
+    if not parts:
+        return False
+    first = parts[0].lower()
+    destructive_starts = {
+        "rm",
+        "kill",
+        "pkill",
+        "killall",
+        "chmod",
+        "chown",
+        "systemctl",
+        "launchctl",
+        "diskutil",
+    }
+    if first in destructive_starts:
+        return True
+    # Package managers used for installs/removals
+    if first in {"apt", "apt-get", "brew", "pip", "pip3", "conda"} and len(parts) > 1:
+        sub = parts[1].lower()
+        if any(x in sub for x in ["install", "remove", "uninstall", "purge"]):
+            return True
+    return False
 
 
 async def run_agent_ws(send_fn, session: AgentSession):
@@ -70,6 +102,25 @@ async def run_agent_ws(send_fn, session: AgentSession):
                 if not cmd:
                     session.instruction_index += 1
                     continue
+                # Backend safety net: require confirmation before obviously destructive commands
+                if _is_potentially_destructive_command(cmd):
+                    await send_fn({
+                        "type": "confirmation_required",
+                        "step_id": step.id,
+                        "prompt": f"You requested to run a potentially destructive command: `{cmd}`. "
+                                  "Do you approve this action? It may delete data or change system state and cannot be undone.",
+                    })
+                    loop = asyncio.get_event_loop()
+                    session.pending_confirmation = loop.create_future()
+                    approved = await session.pending_confirmation
+                    session.pending_confirmation = None
+                    if not approved:
+                        session.state = "idle"
+                        await send_fn({
+                            "type": "workflow_stopped",
+                            "reason": "User declined the requested command.",
+                        })
+                        return
                 await send_fn({"type": "run_command_start", "command": cmd})
                 result = await run_sync(lambda: run_command(cmd))
                 await send_fn({
@@ -148,7 +199,30 @@ async def run_agent_ws(send_fn, session: AgentSession):
                 session.instruction_index += 1
                 continue
 
-            if inst.tool == "request_confirmation" or inst.tool == "message":
+            if inst.tool == "request_confirmation":
+                prompt = args.get("prompt", "") or args.get("message", "") or ""
+                # Ask the frontend to show a confirmation UI and wait for user choice
+                await send_fn({
+                    "type": "confirmation_required",
+                    "step_id": step.id,
+                    "prompt": prompt or "Do you approve this potentially destructive action?",
+                })
+                loop = asyncio.get_event_loop()
+                session.pending_confirmation = loop.create_future()
+                approved = await session.pending_confirmation
+                session.pending_confirmation = None
+                if not approved:
+                    session.state = "idle"
+                    await send_fn({
+                        "type": "workflow_stopped",
+                        "reason": "User declined the requested action.",
+                    })
+                    return
+                # User approved: continue to next instruction (typically a destructive run_command)
+                session.instruction_index += 1
+                continue
+
+            if inst.tool == "message":
                 msg = args.get("message", "") or args.get("prompt", "") or ""
                 if msg:
                     await send_fn({"type": "step_message", "message": msg})
