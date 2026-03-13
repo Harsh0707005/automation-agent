@@ -1,3 +1,30 @@
+MEMORY_EXTRACTION_SYSTEM = """You are a memory extraction agent. Extract important, stable facts from a user-assistant conversation exchange that should be remembered for future interactions.
+
+<rules>
+1. Extract ONLY information explicitly stated by the user — never infer or fabricate.
+2. Only extract stable information: user preferences, environment facts (paths, OS, tools), explicit persistent instructions, or workflows the user described. Skip volatile data (command outputs, file counts, temporary state, current task results).
+3. Each chunk must be a concise, self-contained statement (1-2 sentences max).
+4. Extract 0 to 3 chunks. If nothing meaningful is worth remembering, return an empty list.
+5. Do not store task-specific outputs. Store only facts about the user, their environment, or persistent preferences.
+6. Valid examples: "User's projects are in ~/Projects", "User prefers Python 3 for scripts", "User wants error handling in all shell scripts"
+7. Invalid examples: "User ran ls -la", "There were 12 files in the directory", "User installed Docker today"
+</rules>
+
+<output_format>
+Output valid JSON only. No markdown. Exact shape:
+{"chunks": ["memory chunk 1", "memory chunk 2"]}
+If nothing to remember: {"chunks": []}
+</output_format>"""
+
+
+def memory_extraction_user_prompt(user_message: str, assistant_response: str) -> str:
+    return (
+        f"User message:\n{user_message[:1000]}\n\n"
+        f"Assistant response:\n{assistant_response[:1000]}\n\n"
+        "Extract memory chunks (0-3) from this exchange. Output JSON only."
+    )
+
+
 PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant. You are pair programming with the user to achieve their request. Your main goal is to produce a minimal, ordered list of high-level steps that the agent will execute (terminal commands, reading files, or producing text). The agent runs on the user's machine; it can run terminal commands, read files, and produce text. It cannot use the GUI or act like a human user.
 
 <planning_rules>
@@ -38,7 +65,7 @@ Use only these tools and argument shapes. ALWAYS follow the schema exactly; prov
 2. read_file: {"path": "absolute or relative path"} — to read file content.
 3. write_file: {"path": "...", "content": "..."} — to write or overwrite a file.
 4. message: {"message": "informational text to show user"} — short status or note.
-5. respond: {"context": "optional text (e.g. file content or prior output)", "prompt": "what to produce for the user"} — when the user wants explanation, summary, or answer; context can be from a prior read_file or command output.
+5. respond: {"context": "optional text (e.g. file content or prior output, or User memory)", "prompt": "what to produce for the user"} — when the user wants explanation, summary, or answer. When the goal is "Send text response to the user: <message>", set prompt to the exact message to deliver (e.g. "Say to the user: <message>" or the literal message), so the response layer delivers it correctly from memory/context.
 6. request_confirmation: {"prompt": "question to show the user explaining a potentially destructive or risky action", "message": "short summary of what will happen if they approve"} — use this when you need explicit user consent before a destructive or irreversible action.
 7. ask_user: {"question": "clear question to ask the user", "options": ["option 1", "option 2", "option 3"]} — pause mid-workflow to get required info from the user. Options MUST be real: extract them from prior command output in completed_results, then rank by relevance to the objective and conversation history (keyword overlap, name similarity). Present only the top 2–4 most specific confirmed values — prefer leaf directories over parent containers. Never invent or guess — every option must be verifiable in a completed step's output. The answer is stored and used by all subsequent steps.
 
@@ -52,6 +79,7 @@ Do not refer to internal tool names in the "reason" field; use brief user-facing
 4. Keep instructions minimal and ordered. One run_command per concrete command; combine only when a single compound command is appropriate.
 5. For destructive actions (e.g. `rm -rf`, deleting user data or config files, force-killing processes, modifying system-wide settings, installing/uninstalling system software), emit the run_command directly. The execution layer will automatically intercept and ask for user confirmation before running it — do NOT emit a separate request_confirmation instruction before the run_command, as that causes a redundant double-prompt.
 6. For file/directory deletion, ALWAYS use the exact path when it is known from the goal or conversation context. NEVER use shell wildcards (e.g. `*.sh`, `*`) unless the user explicitly asked to delete multiple files matching a pattern. If the goal says "delete ~/Desktop/hello_world.sh", the command must be `rm ~/Desktop/hello_world.sh`, not `rm ~/Desktop/*.sh`.
+7. When the goal is "Send text response to the user: <message>" (or similar), emit a single respond instruction with prompt set to the exact message to deliver (e.g. "Say to the user: <message>"). Use context to pass any relevant User memory or prior output so the response is grounded in it.
 7a. When the goal is a directory/file search: extract 1–2 short keywords from the overall objective, determine the search root from device context (use home_dir if available, otherwise ~), then emit a `run_command` using `find <home_dir> -type d \( -iname "*<kw1>*" -o -iname "*<kw2>*" \) 2>/dev/null | head -20`. No maxdepth — traverse as deep as needed. Do NOT hardcode any specific paths or directory names in the command. If nothing is found, recovery should try a single broader keyword or a different root, still scoped to this step only.
 7b. When the goal is to ask the user to pick or clarify something AND a prior discovery step has run: emit an `ask_user` instruction. To build smart ranked options: (1) read the real output from completed_results, (2) score each entry against keywords in the overall objective and conversation history — prefer deeper, more specific leaf matches over parent containers, (3) select the top 2–4 highest-scoring real entries. Never invent or assume paths. If no prior discovery step has run, emit a `run_command` search first.
 </execution_rules>

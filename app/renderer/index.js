@@ -48,6 +48,11 @@ const modelSelect = document.getElementById('model-select');
 const queueContainer = document.getElementById('queue-container');
 const sidebarList = document.getElementById('sidebar-list');
 const newChatBtn = document.getElementById('new-chat-btn');
+const memoryBtn = document.getElementById('memory-btn');
+const memoryPanel = document.getElementById('memory-panel');
+const memoryList = document.getElementById('memory-list');
+const memoryCloseBtn = document.getElementById('memory-close-btn');
+const memoryClearAllBtn = document.getElementById('memory-clear-all-btn');
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
@@ -55,6 +60,7 @@ let availableModels = [];
 let typingBubble = null;
 let ws = null;
 let wsReady = false;
+let lastSentUserMessage = '';
 // terminalMap: cmdId -> { block: <details>, pre: <pre> }
 // Multiple entries coexist during parallel step execution.
 const terminalMap = new Map();
@@ -458,6 +464,7 @@ async function startNextQueuedAgentRequest() {
   renderQueue();
   if (!next) return;
 
+  lastSentUserMessage = next.text;
   appendMessage(next.text);
   maybeGenerateConversationTitleInBackground(next.text, next.provider || null, next.model || null);
   activeAgentWorkflow = true;
@@ -632,6 +639,7 @@ function onWsMessage(ev) {
       timestamp: new Date().toISOString(),
     });
     saveCurrentConversation();
+    if (msg.summary) extractAndSaveMemory(lastSentUserMessage, msg.summary);
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
     startNextQueuedAgentRequest();
@@ -783,6 +791,118 @@ function showPlan(planData, record = true) {
   }
 }
 
+// ─── Memory ───────────────────────────────────────────────────────────────────
+
+/** Score memory chunks by keyword overlap with query. Returns top 5 relevant chunks. */
+async function getRelevantMemory(query) {
+  if (!window.electronAPI?.getMemory) return [];
+  const all = await window.electronAPI.getMemory();
+  if (!all?.length) return [];
+
+  const queryWords = new Set(query.toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  if (queryWords.size === 0) return all.slice(0, 5);
+
+  const scored = all.map((chunk) => {
+    const words = chunk.content.toLowerCase().split(/\W+/);
+    const score = words.filter((w) => queryWords.has(w)).length;
+    return { chunk, score };
+  });
+  scored.sort((a, b) => b.score - a.score || new Date(b.chunk.createdAt) - new Date(a.chunk.createdAt));
+  return scored.slice(0, 5).map((s) => s.chunk);
+}
+
+/** Fire-and-forget: extract memory from an exchange and persist any new chunks. */
+function extractAndSaveMemory(userMessage, assistantResponse) {
+  if (!userMessage || !assistantResponse) return;
+  const selected = getSelectedModel();
+  const provider = selected ? selected.provider : null;
+  if (!provider) return;
+
+  (async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/extract-memory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_message: userMessage,
+          assistant_response: assistantResponse,
+          provider,
+          model: selected.model || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.chunks?.length) return;
+
+      const now = new Date().toISOString();
+      const newChunks = data.chunks.map((content) => ({ id: generateId(), content, createdAt: now }));
+      if (window.electronAPI?.addMemoryChunks) {
+        await window.electronAPI.addMemoryChunks(newChunks);
+      }
+    } catch (_) {}
+  })();
+}
+
+async function renderMemoryPanel() {
+  if (!memoryList) return;
+  const chunks = window.electronAPI?.getMemory ? await window.electronAPI.getMemory() : [];
+  memoryList.innerHTML = '';
+
+  if (!chunks?.length) {
+    const empty = document.createElement('div');
+    empty.className = 'memory-empty';
+    empty.textContent = 'No memories stored yet.';
+    memoryList.appendChild(empty);
+    return;
+  }
+
+  for (const chunk of [...chunks].reverse()) {
+    const item = document.createElement('div');
+    item.className = 'memory-item';
+
+    const body = document.createElement('div');
+    body.className = 'memory-item-body';
+
+    const content = document.createElement('div');
+    content.className = 'memory-item-content';
+    content.textContent = chunk.content;
+    body.appendChild(content);
+
+    const date = document.createElement('div');
+    date.className = 'memory-item-date';
+    date.textContent = formatRelativeTime(chunk.createdAt);
+    body.appendChild(date);
+
+    item.appendChild(body);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'memory-item-delete';
+    delBtn.title = 'Delete';
+    delBtn.textContent = '×';
+    delBtn.onclick = async () => {
+      if (window.electronAPI?.deleteMemoryChunk) {
+        await window.electronAPI.deleteMemoryChunk(chunk.id);
+      }
+      renderMemoryPanel();
+    };
+    item.appendChild(delBtn);
+
+    memoryList.appendChild(item);
+  }
+}
+
+function openMemoryPanel() {
+  if (!memoryPanel) return;
+  memoryPanel.style.display = 'flex';
+  memoryBtn?.classList.add('active');
+  renderMemoryPanel();
+}
+
+function closeMemoryPanel() {
+  if (!memoryPanel) return;
+  memoryPanel.style.display = 'none';
+  memoryBtn?.classList.remove('active');
+}
+
 // ─── Model loading ────────────────────────────────────────────────────────────
 
 async function loadModels() {
@@ -830,6 +950,7 @@ async function send() {
   const selected = getSelectedModel();
 
   if (!useAgent || !selected) {
+    lastSentUserMessage = text;
     appendMessage(text);
     // First user message in a new conversation: kick off background title generation.
     maybeGenerateConversationTitleInBackground(
@@ -849,6 +970,11 @@ async function send() {
       }
     } catch (_) {
       context = getFallbackContext();
+    }
+
+    const relevantChunks = await getRelevantMemory(text);
+    if (relevantChunks.length > 0) {
+      context.user_memory = relevantChunks.map((c) => c.content).join(' | ');
     }
 
     showTypingBubble();
@@ -871,8 +997,13 @@ async function send() {
       if (!res.ok) appendMessage(`Error: ${data.error || res.statusText}`, false);
       else if (!data.ok) appendMessage(`Error: ${data.error || 'Unknown'}`, false);
       else if (Array.isArray(data.responses)) {
-        if (selected && data.responses[0]?.content) appendMessage(data.responses[0].content, false);
-        else data.responses.forEach((r) => { if (r?.content) appendMessage(`${r.provider}: ${r.content}`, false); });
+        const responseContent = data.responses[0]?.content;
+        if (selected && responseContent) {
+          appendMessage(responseContent, false);
+          extractAndSaveMemory(text, responseContent);
+        } else {
+          data.responses.forEach((r) => { if (r?.content) appendMessage(`${r.provider}: ${r.content}`, false); });
+        }
       }
     } catch (err) {
       const errMsg = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Backend unreachable');
@@ -899,6 +1030,11 @@ async function send() {
     context = getFallbackContext();
   }
 
+  const relevantChunks = await getRelevantMemory(text);
+  if (relevantChunks.length > 0) {
+    context.user_memory = relevantChunks.map((c) => c.content).join(' | ');
+  }
+
   const requestPayload = {
     id: nextQueueId++,
     text,
@@ -908,6 +1044,7 @@ async function send() {
   };
 
   if (!activeAgentWorkflow) {
+    lastSentUserMessage = text;
     appendMessage(text);
     // First user message in a new conversation: kick off background title generation.
     maybeGenerateConversationTitleInBackground(text, selected.provider, selected.model);
@@ -1032,6 +1169,29 @@ if (newChatBtn) {
   newChatBtn.addEventListener('click', () => {
     if (activeAgentWorkflow) return;
     startNewConversation();
+  });
+}
+
+if (memoryBtn) {
+  memoryBtn.addEventListener('click', () => {
+    if (memoryPanel?.style.display === 'none' || !memoryPanel?.style.display) {
+      openMemoryPanel();
+    } else {
+      closeMemoryPanel();
+    }
+  });
+}
+
+if (memoryCloseBtn) {
+  memoryCloseBtn.addEventListener('click', closeMemoryPanel);
+}
+
+if (memoryClearAllBtn) {
+  memoryClearAllBtn.addEventListener('click', async () => {
+    if (window.electronAPI?.saveMemory) {
+      await window.electronAPI.saveMemory([]);
+    }
+    renderMemoryPanel();
   });
 }
 

@@ -104,6 +104,16 @@ function getConversationsDir() {
   return dir;
 }
 
+function getMemoryFile() {
+  return path.join(app.getPath('userData'), 'memory.json');
+}
+
+function readMemory() {
+  const file = getMemoryFile();
+  if (!fs.existsSync(file)) return [];
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return []; }
+}
+
 app.whenReady().then(() => {
   ipcMain.handle('get-device-context', getDeviceContext);
 
@@ -137,6 +147,25 @@ app.whenReady().then(() => {
     const dir = getConversationsDir();
     const file = path.join(dir, `${id}.json`);
     if (fs.existsSync(file)) fs.unlinkSync(file);
+    return true;
+  });
+
+  ipcMain.handle('get-memory', () => readMemory());
+
+  ipcMain.handle('save-memory', (_, chunks) => {
+    fs.writeFileSync(getMemoryFile(), JSON.stringify(chunks), 'utf8');
+    return true;
+  });
+
+  ipcMain.handle('add-memory-chunks', (_, newChunks) => {
+    const existing = readMemory();
+    fs.writeFileSync(getMemoryFile(), JSON.stringify([...existing, ...newChunks]), 'utf8');
+    return true;
+  });
+
+  ipcMain.handle('delete-memory-chunk', (_, id) => {
+    const updated = readMemory().filter((c) => c.id !== id);
+    fs.writeFileSync(getMemoryFile(), JSON.stringify(updated), 'utf8');
     return true;
   });
 

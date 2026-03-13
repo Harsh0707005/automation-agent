@@ -325,6 +325,28 @@ def post_message(req: MessageRequest):
     return {"ok": True, "responses": responses}
 
 
+class ExtractMemoryRequest(BaseModel):
+    user_message: str
+    assistant_response: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/extract-memory")
+def post_extract_memory(req: ExtractMemoryRequest):
+    if not req.user_message or not req.assistant_response:
+        return {"ok": True, "chunks": []}
+    provider = req.provider or engine.get_providers()[0]
+    try:
+        from backend.agent.memory_extraction import extract_memory_chunks
+        chunks = extract_memory_chunks(
+            req.user_message, req.assistant_response, engine, provider, req.model
+        )
+        return {"ok": True, "chunks": chunks}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "chunks": []}
+
+
 @app.post("/title", response_model=TitleResponse)
 def post_title(req: MessageRequest) -> TitleResponse:
     """Generate a short conversation title from the initial user message.

@@ -19,8 +19,27 @@
         </button>
       </div>
       <div class="sidebar-list" id="sidebar-list"></div>
+      <div class="sidebar-footer">
+        <button id="memory-btn" class="memory-btn" title="View Memory">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Memory
+        </button>
+      </div>
     </aside>
     <div class="main-area">
+      <div id="memory-panel" class="memory-panel" style="display:none">
+        <div class="memory-panel-header">
+          <div class="memory-panel-title">Memory</div>
+          <div class="memory-panel-header-right">
+            <button id="memory-clear-all-btn" class="memory-clear-btn">Clear All</button>
+            <button id="memory-close-btn" class="memory-close-btn">✕</button>
+          </div>
+        </div>
+        <div class="memory-panel-desc">Facts the agent remembers from your conversations</div>
+        <div id="memory-list" class="memory-list"></div>
+      </div>
       <div class="messages" id="messages"></div>
       <div class="queue-container" id="queue-container"></div>
       <div class="input-row">

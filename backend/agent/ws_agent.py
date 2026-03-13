@@ -247,6 +247,9 @@ async def run_agent_ws(send_fn, session: AgentSession):
                 if inst.tool == "respond":
                     prompt_text = args.get("prompt", "") or "Respond to the user."
                     context_text = args.get("context", "") or session.last_read_content
+                    memory = (session.context or {}).get("user_memory", "")
+                    if memory:
+                        context_text = f"{context_text}\n\nUser memory: {memory}".strip() if context_text else f"User memory: {memory}"
                     response = await run_sync(
                         lambda: generate_response(
                             prompt_text, context_text or None, engine, session.provider, session.model
