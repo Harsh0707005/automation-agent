@@ -25,3 +25,22 @@ Avoid excessive comments that make the code messy or over explanatory. Comments 
 File Structure Guidelines
 
 Avoid creating large files that are difficult to maintain. Break functionality into smaller, well organized modules. Maintain a clear and production ready file structure that is self explanatory and easy to navigate. This improves long term maintainability and scalability of the codebase.
+
+Conversation Context Maintenance
+
+Since the system follows an agentic workflow, maintaining conversation context is critical for consistent reasoning and task continuity. The agent must remain aware of the full conversational history so that decisions remain aligned with the user’s intent and previously executed actions.
+
+For every interaction with the agent, the backend maintains the conversation history in memory. This history contains all previous messages exchanged between the user and the system during the session. Whenever the agent sends a request to the LLM, the conversation history is appended as context so the model understands what has already happened in the task lifecycle.
+
+However, LLM context windows are limited. If the conversation becomes large, sending the full history becomes inefficient and may exceed model limits. To address this, the system implements a context compression strategy.
+
+When the total token size of the conversation exceeds a predefined threshold, the system performs a summarization step. In this step, the agent sends the entire conversation history to the LLM with instructions to produce a concise summary that preserves the important task details, decisions, actions taken, and the current progress state.
+
+Once the summary is generated, the context sent to future LLM calls is structured in the following way.
+
+1. The summarized representation of the earlier conversation history.
+2. The most recent two messages from the conversation included exactly as they were written.
+
+The last two messages are preserved without summarization because they often contain immediate instructions, clarifications, or context that is critical for the next reasoning step. Summarizing them could remove important short term information.
+
+This approach allows the agent to maintain awareness of the full conversation while remaining within LLM context limits and keeping token usage efficient. The summarization process happens internally as part of the system’s context management and is not visible to the user.
