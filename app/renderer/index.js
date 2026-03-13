@@ -309,4 +309,11 @@ input.addEventListener('keydown', (e) => {
 });
 sendBtn.addEventListener('click', send);
 updateSendState();
+
+// Default to Agent mode on app open
+const useAgentCheckbox = document.getElementById('use-agent');
+if (useAgentCheckbox) {
+  useAgentCheckbox.checked = true;
+}
+
 loadModels();
