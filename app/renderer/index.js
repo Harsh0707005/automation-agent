@@ -23,6 +23,7 @@ const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const messagesEl = document.getElementById('messages');
 const modelSelect = document.getElementById('model-select');
+const queueContainer = document.getElementById('queue-container');
 
 let availableModels = [];
 let typingBubble = null;
@@ -30,6 +31,9 @@ let ws = null;
 let wsReady = false;
 let currentTerminalBlock = null;
 let currentTerminalPre = null;
+let activeAgentWorkflow = false;
+let queuedAgentRequests = [];
+let nextQueueId = 1;
 
 // Wire up streaming output from Electron main (user-side command execution).
 if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'function') {
@@ -85,6 +89,74 @@ function ensureWs() {
   });
 }
 
+function renderQueue() {
+  if (!queueContainer) return;
+  queueContainer.innerHTML = '';
+  if (!queuedAgentRequests.length) return;
+
+  queuedAgentRequests.forEach((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'queue-item';
+    card.style.zIndex = String(100 - idx);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'queue-item-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.title = 'Remove from queue';
+    removeBtn.onclick = (e) => {
+      e.stopPropagation();
+      queuedAgentRequests = queuedAgentRequests.filter((q) => q.id !== item.id);
+      renderQueue();
+    };
+    card.appendChild(removeBtn);
+
+    const label = document.createElement('div');
+    label.className = 'queue-item-label';
+    label.textContent = idx === 0 ? 'Next task in queue' : `Queued #${idx + 1}`;
+    card.appendChild(label);
+
+    const text = document.createElement('div');
+    text.className = 'queue-item-text';
+    text.textContent = item.text;
+    card.appendChild(text);
+
+    queueContainer.appendChild(card);
+  });
+}
+
+async function startNextQueuedAgentRequest() {
+  if (activeAgentWorkflow) return;
+  if (!queuedAgentRequests.length) return;
+
+  const next = queuedAgentRequests.shift();
+  renderQueue();
+  if (!next) return;
+
+  // Now that it is actually starting, show the queued user message in the chat.
+  appendMessage(next.text);
+  activeAgentWorkflow = true;
+  showTypingBubble();
+  try {
+    await ensureWs();
+    ws.send(JSON.stringify({
+      type: 'start',
+      payload: {
+        message: next.text,
+        provider: next.provider,
+        model: next.model,
+        context: next.context,
+      },
+    }));
+  } catch (err) {
+    activeAgentWorkflow = false;
+    hideTypingBubble();
+    appendMessage(`Error: ${err.message || 'WebSocket failed'}`, false);
+    sendBtn.disabled = false;
+    await startNextQueuedAgentRequest();
+  }
+}
+
 function onWsMessage(ev) {
   let msg;
   try {
@@ -102,6 +174,8 @@ function onWsMessage(ev) {
     hideTypingBubble();
     appendMessage(`Error: ${msg.error || 'Unknown'}`, false);
     sendBtn.disabled = false;
+    activeAgentWorkflow = false;
+    startNextQueuedAgentRequest();
     input.focus();
     return;
   }
@@ -162,21 +236,19 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'workflow_done') {
-    const d = document.createElement('div');
-    d.className = 'workflow-done';
-    const heading = document.createElement('div');
-    heading.className = 'workflow-done-heading';
-    heading.textContent = 'Workflow complete.';
-    d.appendChild(heading);
     if (msg.summary && msg.summary.trim()) {
+      const d = document.createElement('div');
+      d.className = 'workflow-done';
       const summaryEl = document.createElement('div');
       summaryEl.className = 'workflow-done-summary';
       summaryEl.innerHTML = renderMarkdown(msg.summary);
       d.appendChild(summaryEl);
+      messagesEl.appendChild(d);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     }
-    messagesEl.appendChild(d);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
     sendBtn.disabled = false;
+    activeAgentWorkflow = false;
+    startNextQueuedAgentRequest();
     input.focus();
     return;
   }
@@ -223,6 +295,8 @@ function onWsMessage(ev) {
     messagesEl.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     sendBtn.disabled = false;
+    activeAgentWorkflow = false;
+    startNextQueuedAgentRequest();
     input.focus();
     return;
   }
@@ -296,11 +370,63 @@ function getFallbackContext() {
 async function send() {
   const text = input.value.trim();
   if (!text) return;
-  appendMessage(text);
+  const useAgent = document.getElementById('use-agent').checked;
+  const selected = getSelectedModel();
+
+  // Non-agent or no model selected: behave as a simple chat, no queueing.
+  if (!useAgent || !selected) {
+    appendMessage(text);
+    input.value = '';
+    sendBtn.disabled = true;
+
+    let context = {};
+    try {
+      if (window.electronAPI && typeof window.electronAPI.getDeviceContext === 'function') {
+        context = await window.electronAPI.getDeviceContext();
+      } else {
+        context = getFallbackContext();
+      }
+    } catch (_) {
+      context = getFallbackContext();
+    }
+
+    showTypingBubble();
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const res = await fetch(`${BACKEND_URL}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          provider: selected?.provider,
+          model: selected?.model,
+          context,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) appendMessage(`Error: ${data.error || res.statusText}`, false);
+      else if (!data.ok) appendMessage(`Error: ${data.error || 'Unknown'}`, false);
+      else if (Array.isArray(data.responses)) {
+        if (selected && data.responses[0]?.content) appendMessage(data.responses[0].content, false);
+        else data.responses.forEach((r) => { if (r?.content) appendMessage(`${r.provider}: ${r.content}`, false); });
+      }
+    } catch (err) {
+      const msg = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Backend unreachable');
+      appendMessage(`Error: ${msg}`, false);
+    } finally {
+      hideTypingBubble();
+      sendBtn.disabled = false;
+      input.focus();
+    }
+    return;
+  }
+
+  // Agent mode with a selected model: support queueing.
   input.value = '';
   sendBtn.disabled = true;
-  const selected = getSelectedModel();
-  const useAgent = document.getElementById('use-agent').checked;
 
   let context = {};
   try {
@@ -313,55 +439,40 @@ async function send() {
     context = getFallbackContext();
   }
 
-  if (useAgent && selected) {
+  const requestPayload = {
+    id: nextQueueId++,
+    text,
+    provider: selected.provider,
+    model: selected.model,
+    context,
+  };
+
+  if (!activeAgentWorkflow) {
+    // First / only active workflow: show immediately in chat.
+    appendMessage(text);
+    activeAgentWorkflow = true;
     showTypingBubble();
     try {
       await ensureWs();
       ws.send(JSON.stringify({
         type: 'start',
         payload: {
-          message: text,
-          provider: selected.provider,
-          model: selected.model,
-          context,
+          message: requestPayload.text,
+          provider: requestPayload.provider,
+          model: requestPayload.model,
+          context: requestPayload.context,
         },
       }));
     } catch (err) {
+      activeAgentWorkflow = false;
       hideTypingBubble();
       appendMessage(`Error: ${err.message || 'WebSocket failed'}`, false);
       sendBtn.disabled = false;
     }
-    return;
-  }
-
-  showTypingBubble();
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-    const res = await fetch(`${BACKEND_URL}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        provider: selected?.provider,
-        model: selected?.model,
-        context,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) appendMessage(`Error: ${data.error || res.statusText}`, false);
-    else if (!data.ok) appendMessage(`Error: ${data.error || 'Unknown'}`, false);
-    else if (Array.isArray(data.responses)) {
-      if (selected && data.responses[0]?.content) appendMessage(data.responses[0].content, false);
-      else data.responses.forEach((r) => { if (r?.content) appendMessage(`${r.provider}: ${r.content}`, false); });
-    }
-  } catch (err) {
-    const msg = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Backend unreachable');
-    appendMessage(`Error: ${msg}`, false);
-  } finally {
-    hideTypingBubble();
+  } else {
+    // Already running: just enqueue; don't show user bubble yet.
+    queuedAgentRequests.push(requestPayload);
+    renderQueue();
     sendBtn.disabled = false;
     input.focus();
   }
