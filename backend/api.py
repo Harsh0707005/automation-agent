@@ -83,11 +83,41 @@ async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     session = AgentSession(engine=engine)
 
+    agent_task: asyncio.Task | None = None
+    # Flag to indicate the current workflow has been cancelled from the client.
+    session.cancelled = False  # type: ignore[attr-defined]
+
     async def send(msg: dict):
         # Capture workflow summary into conversation history as an assistant turn
         if msg.get("type") == "workflow_done" and session.last_summary:
             _append_history(session.conversation_history, "assistant", session.last_summary)
         await websocket.send_text(json.dumps(msg))
+
+    async def run_workflow(message: str, provider: str, model: str | None, context: dict | None, conv_history: list) -> None:
+        """Run planning + agent execution as a background task so the receive loop stays free."""
+        try:
+            planned = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: plan(
+                    message,
+                    engine,
+                    provider,
+                    model,
+                    context=context,
+                    conversation_history=conv_history,
+                ),
+            )
+            # If the workflow was cancelled while we were still planning, bail out silently.
+            if getattr(session, "cancelled", False):
+                return
+            session.plan = planned
+            await send({"type": "plan", "plan": planned.model_dump()})
+            await run_agent_ws(send, session)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if not getattr(session, "cancelled", False):
+                await send({"type": "error", "error": str(e)})
 
     try:
         while True:
@@ -107,6 +137,7 @@ async def ws_endpoint(websocket: WebSocket):
                 _append_history(session.conversation_history, "user", message)
 
                 # Reset per-workflow state for the new request
+                session.cancelled = False  # type: ignore[attr-defined]
                 session.plan = None
                 session.step_index = 0
                 session.instruction_index = 0
@@ -119,24 +150,12 @@ async def ws_endpoint(websocket: WebSocket):
                 session.provider = provider
                 session.model = model
                 session.context = context
-                try:
-                    planned = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: plan(
-                            message,
-                            engine,
-                            provider,
-                            model,
-                            context=context,
-                            conversation_history=list(session.conversation_history),
-                        ),
-                    )
-                    session.plan = planned
-                    await send({"type": "plan", "plan": planned.model_dump()})
-                    # Start execution in background so we can still receive confirmations
-                    asyncio.create_task(run_agent_ws(send, session))
-                except Exception as e:
-                    await send({"type": "error", "error": str(e)})
+
+                # Run planning + execution in the background so we can immediately handle
+                # stop/confirmation/command_result messages while the LLM is working.
+                agent_task = asyncio.create_task(
+                    run_workflow(message, provider, model, context, list(session.conversation_history))
+                )
             elif typ == "confirmation_response":
                 approved = bool((msg.get("payload") or {}).get("approved"))
                 fut = getattr(session, "pending_confirmation", None)
@@ -159,6 +178,24 @@ async def ws_endpoint(websocket: WebSocket):
                             "returncode": int(payload.get("returncode") or 0),
                         }
                     )
+            elif typ == "stop":
+                # User requested to stop the current workflow.
+                session.cancelled = True  # type: ignore[attr-defined]
+
+                # Best-effort cancel of any in-flight agent execution, but do NOT await it.
+                if agent_task is not None and not agent_task.done():
+                    agent_task.cancel()
+
+                # Cancel any pending waiters so the session can cleanly reset.
+                for fut_name in ("pending_confirmation", "pending_command_result", "pending_user_input"):
+                    fut = getattr(session, fut_name, None)
+                    if fut is not None and not fut.done():
+                        fut.cancel()
+                        setattr(session, fut_name, None)
+
+                session.state = "idle"
+                reason = (msg.get("payload") or {}).get("reason") or "Stopped."
+                await send({"type": "workflow_stopped", "reason": reason})
     except Exception:
         pass
 

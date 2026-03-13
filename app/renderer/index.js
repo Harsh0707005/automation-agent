@@ -21,6 +21,8 @@ function renderMarkdown(text) {
 
 const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
+const sendIconSend = document.getElementById('send-icon-send');
+const sendIconCancel = document.getElementById('send-icon-cancel');
 const messagesEl = document.getElementById('messages');
 const modelSelect = document.getElementById('model-select');
 const queueContainer = document.getElementById('queue-container');
@@ -34,6 +36,7 @@ let currentTerminalPre = null;
 let activeAgentWorkflow = false;
 let queuedAgentRequests = [];
 let nextQueueId = 1;
+let cancellingWorkflow = false;
 
 // Wire up streaming output from Electron main (user-side command execution).
 if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'function') {
@@ -136,6 +139,7 @@ async function startNextQueuedAgentRequest() {
   // Now that it is actually starting, show the queued user message in the chat.
   appendMessage(next.text);
   activeAgentWorkflow = true;
+  cancellingWorkflow = false;
   showTypingBubble();
   try {
     await ensureWs();
@@ -165,6 +169,10 @@ function onWsMessage(ev) {
     return;
   }
   const typ = msg.type;
+  if (cancellingWorkflow && typ !== 'workflow_stopped') {
+    // Ignore any in-flight messages from a workflow we've cancelled.
+    return;
+  }
   if (typ === 'plan') {
     hideTypingBubble();
     showPlan(msg.plan);
@@ -173,10 +181,11 @@ function onWsMessage(ev) {
   if (typ === 'error') {
     hideTypingBubble();
     appendMessage(`Error: ${msg.error || 'Unknown'}`, false);
-    sendBtn.disabled = false;
     activeAgentWorkflow = false;
+    cancellingWorkflow = false;
     startNextQueuedAgentRequest();
     input.focus();
+    updateSendState();
     return;
   }
   if (typ === 'step_start') {
@@ -246,10 +255,11 @@ function onWsMessage(ev) {
       messagesEl.appendChild(d);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
-    sendBtn.disabled = false;
     activeAgentWorkflow = false;
+    cancellingWorkflow = false;
     startNextQueuedAgentRequest();
     input.focus();
+    updateSendState();
     return;
   }
   if (typ === 'confirmation_required') {
@@ -348,15 +358,20 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'workflow_stopped') {
-    const d = document.createElement('div');
-    d.className = 'workflow-stopped';
-    d.textContent = msg.reason || 'Stopped by user.';
-    messagesEl.appendChild(d);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    sendBtn.disabled = false;
+    hideTypingBubble();
+    // Only show the message if we didn't already show it optimistically on click.
+    if (!cancellingWorkflow) {
+      const d = document.createElement('div');
+      d.className = 'workflow-stopped';
+      d.textContent = msg.reason || 'Stopped.';
+      messagesEl.appendChild(d);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
     activeAgentWorkflow = false;
+    cancellingWorkflow = false;
     startNextQueuedAgentRequest();
     input.focus();
+    updateSendState();
     return;
   }
 }
@@ -477,8 +492,8 @@ async function send() {
       appendMessage(`Error: ${msg}`, false);
     } finally {
       hideTypingBubble();
-      sendBtn.disabled = false;
       input.focus();
+      updateSendState();
     }
     return;
   }
@@ -510,6 +525,8 @@ async function send() {
     // First / only active workflow: show immediately in chat.
     appendMessage(text);
     activeAgentWorkflow = true;
+    cancellingWorkflow = false;
+    updateSendState();
     showTypingBubble();
     try {
       await ensureWs();
@@ -526,29 +543,98 @@ async function send() {
       activeAgentWorkflow = false;
       hideTypingBubble();
       appendMessage(`Error: ${err.message || 'WebSocket failed'}`, false);
-      sendBtn.disabled = false;
+      updateSendState();
     }
   } else {
     // Already running: just enqueue; don't show user bubble yet.
     queuedAgentRequests.push(requestPayload);
     renderQueue();
-    sendBtn.disabled = false;
     input.focus();
+    updateSendState();
   }
 }
 
 function updateSendState() {
-  sendBtn.disabled = !input.value.trim();
+  const hasText = !!input.value.trim();
+  const useAgentCheckboxEl = document.getElementById('use-agent');
+  const agentEnabled = !!(useAgentCheckboxEl && useAgentCheckboxEl.checked);
+
+  if (activeAgentWorkflow && agentEnabled) {
+    if (hasText) {
+      // While a task is running, any text means "queue this" (send mode with arrow).
+      sendBtn.disabled = false;
+      sendBtn.dataset.mode = 'send';
+      sendBtn.classList.remove('cancel-mode');
+      sendBtn.classList.add('send-mode');
+      if (sendIconSend) sendIconSend.style.display = 'inline-flex';
+      if (sendIconCancel) sendIconCancel.style.display = 'none';
+    } else {
+      // No text while a task is running: show cancel/stop button.
+      sendBtn.disabled = false;
+      sendBtn.dataset.mode = 'cancel';
+      sendBtn.classList.remove('send-mode');
+      sendBtn.classList.add('cancel-mode');
+      if (sendIconSend) sendIconSend.style.display = 'none';
+      if (sendIconCancel) sendIconCancel.style.display = 'inline-flex';
+    }
+    return;
+  }
+
+  // No active agent workflow: standard send behavior with up-arrow.
+  sendBtn.dataset.mode = 'send';
+  sendBtn.classList.remove('cancel-mode');
+  sendBtn.classList.add('send-mode');
+  if (sendIconSend) sendIconSend.style.display = 'inline-flex';
+  if (sendIconCancel) sendIconCancel.style.display = 'none';
+  sendBtn.disabled = !hasText;
+}
+
+function cancelCurrentWorkflow() {
+  if (!activeAgentWorkflow) return;
+
+  // Immediately update UI — don't wait for backend confirmation.
+  cancellingWorkflow = true;
+  activeAgentWorkflow = false;
+  hideTypingBubble();
+
+  const d = document.createElement('div');
+  d.className = 'workflow-stopped';
+  d.textContent = 'Stopped.';
+  messagesEl.appendChild(d);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  updateSendState();
+  input.focus();
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    cancellingWorkflow = false;
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: 'stop',
+    payload: { reason: 'Stopped.' },
+  }));
+}
+
+async function handleSendOrCancel() {
+  const mode = sendBtn.dataset.mode || 'send';
+  if (mode === 'cancel') {
+    cancelCurrentWorkflow();
+  } else {
+    await send();
+  }
 }
 
 input.addEventListener('input', updateSendState);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    send();
+    handleSendOrCancel();
   }
 });
-sendBtn.addEventListener('click', send);
+sendBtn.addEventListener('click', () => {
+  handleSendOrCancel();
+});
 updateSendState();
 
 // Default to Agent mode on app open
