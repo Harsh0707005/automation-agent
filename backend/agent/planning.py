@@ -13,9 +13,10 @@ def plan(
     model: str | None = None,
     context: dict | None = None,
     recent_results: list[tuple[str, str]] | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> Plan:
     import sys
-    full_prompt = f"{PLANNING_SYSTEM}\n\n{planning_user_prompt(user_request, context, recent_results)}"
+    full_prompt = f"{PLANNING_SYSTEM}\n\n{planning_user_prompt(user_request, context, recent_results, conversation_history)}"
     print("[agent] LLM planning call...", flush=True)
     sys.stdout.flush()
     result = engine.complete(full_prompt, provider=provider, model=model, timeout=90)

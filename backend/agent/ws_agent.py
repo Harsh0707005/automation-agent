@@ -28,6 +28,9 @@ class AgentSession:
     pending_confirmation: asyncio.Future | None = None
     # For awaiting command results coming back from the Electron client
     pending_command_result: asyncio.Future | None = None
+    # Persistent across runs — never reset between requests
+    conversation_history: list[dict] = field(default_factory=list)
+    last_summary: str = ""
 
 
 def _is_potentially_destructive_command(command: str) -> bool:
@@ -44,7 +47,6 @@ def _is_potentially_destructive_command(command: str) -> bool:
         "kill",
         "pkill",
         "killall",
-        "chmod",
         "chown",
         "systemctl",
         "launchctl",
@@ -268,4 +270,5 @@ async def run_agent_ws(send_fn, session: AgentSession):
             session.model,
         )
     )
+    session.last_summary = summary
     await send_fn({"type": "workflow_done", "summary": summary})

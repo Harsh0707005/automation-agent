@@ -8,6 +8,7 @@ PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant
 5. You may see recent agent results (previous steps the agent already ran) in the context. If the new user request can be satisfied by *explaining or reusing those results* (e.g. "explain the first process from the list you just showed"), prefer planning *explanation-only* steps (using text responses) instead of re-running similar commands.
 6. When the user refers to "the 3rd process", "the first one", "the second one", or similar ordinal phrases, interpret them relative to the most recent relevant list in the recent agent results (e.g. the top-10 process list you just showed), unless the user clearly specifies a different source.
 7. Do NOT add separate "confirm" or "ask for approval" steps before destructive operations. The execution layer handles confirmation automatically before running any destructive command. Just plan the direct action step (e.g. "Delete ~/Desktop/hello.sh").
+8. When a specific file, directory, or resource was mentioned or created in the conversation history, ALWAYS use its exact path/name in the step description. Never use vague references like "the script" or "the file" — write the exact path (e.g. "Delete ~/Desktop/hello_world.sh", not "Delete the bash script").
 </planning_rules>
 
 <output_format>
@@ -36,6 +37,7 @@ Do not refer to internal tool names in the "reason" field; use brief user-facing
 3. If the user specifies a value (e.g. port 3001, path /tmp/foo), use that value EXACTLY in the command or path. Do not make up values for required parameters.
 4. Keep instructions minimal and ordered. One run_command per concrete command; combine only when a single compound command is appropriate.
 5. For destructive actions (e.g. `rm -rf`, deleting user data or config files, force-killing processes, modifying system-wide settings, installing/uninstalling system software), emit the run_command directly. The execution layer will automatically intercept and ask for user confirmation before running it — do NOT emit a separate request_confirmation instruction before the run_command, as that causes a redundant double-prompt.
+6. For file/directory deletion, ALWAYS use the exact path when it is known from the goal or conversation context. NEVER use shell wildcards (e.g. `*.sh`, `*`) unless the user explicitly asked to delete multiple files matching a pattern. If the goal says "delete ~/Desktop/hello_world.sh", the command must be `rm ~/Desktop/hello_world.sh`, not `rm ~/Desktop/*.sh`.
 </execution_rules>
 
 <output_format>
@@ -49,6 +51,7 @@ def planning_user_prompt(
     user_request: str,
     context: dict | None = None,
     recent_results: list[tuple[str, str]] | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> str:
     base_lines: list[str] = []
     if context:
@@ -56,8 +59,17 @@ def planning_user_prompt(
         for k, v in sorted(context.items()):
             base_lines.append(f"  {k}: {v}")
         base_lines.append("")
+    if conversation_history:
+        base_lines.append("Conversation history (oldest to newest):")
+        for turn in conversation_history[-10:]:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            content = turn["content"][:500]
+            if len(turn["content"]) > 500:
+                content += "..."
+            base_lines.append(f"  {role}: {content}")
+        base_lines.append("")
     if recent_results:
-        base_lines.append("Recent agent results (for context, do not repeat work unnecessarily):")
+        base_lines.append("Recent step results from current workflow:")
         for step_id, result in recent_results[-3:]:
             snippet = result[:400]
             if len(result) > 400:
