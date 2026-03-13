@@ -140,7 +140,7 @@ app.whenReady().then(() => {
     return true;
   });
 
-  ipcMain.handle('run-interactive-command', async (event, command) => {
+  ipcMain.handle('run-interactive-command', async (event, command, cmdId) => {
     const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
     return await new Promise((resolve) => {
       try {
@@ -150,7 +150,7 @@ app.whenReady().then(() => {
 
         const sendStream = (stream, data) => {
           if (win && !win.isDestroyed()) {
-            win.webContents.send('command-stream', { stream, data: data.toString() });
+            win.webContents.send('command-stream', { stream, data: data.toString(), cmdId });
           }
         };
 

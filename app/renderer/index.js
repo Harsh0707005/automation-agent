@@ -55,8 +55,9 @@ let availableModels = [];
 let typingBubble = null;
 let ws = null;
 let wsReady = false;
-let currentTerminalBlock = null;
-let currentTerminalPre = null;
+// terminalMap: cmdId -> { block: <details>, pre: <pre> }
+// Multiple entries coexist during parallel step execution.
+const terminalMap = new Map();
 let activeAgentWorkflow = false;
 let queuedAgentRequests = [];
 let nextQueueId = 1;
@@ -67,7 +68,6 @@ let cancellingWorkflow = false;
 let currentConversationId = generateId();
 let currentConversationMessages = []; // structured records for persistence
 let conversationTitle = null;
-let currentCommandRecordIdx = -1;   // index into currentConversationMessages for in-flight command
 
 // How many recent user↔assistant turn-pairs to send verbatim; older turns are collapsed into summaries.
 const RECENT_TURNS = 6;
@@ -226,6 +226,13 @@ function renderStoredMessage(msg) {
       messagesEl.appendChild(badge);
       break;
     }
+    case 'step_failed': {
+      const d = document.createElement('div');
+      d.className = 'step-badge step-failed';
+      d.textContent = `Step ${msg.step_id} failed${msg.reason ? ': ' + msg.reason : ''}`;
+      messagesEl.appendChild(d);
+      break;
+    }
     case 'step_complete': {
       const d = document.createElement('div');
       d.className = 'step-badge';
@@ -285,8 +292,10 @@ function renderStoredMessage(msg) {
 if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'function') {
   window.electronAPI.onCommandStream((msg) => {
     if (!msg || typeof msg.data !== 'string') return;
-    if (!currentTerminalPre) return;
-    currentTerminalPre.textContent += msg.data;
+    // Route stream data to the correct terminal block by cmdId.
+    const entry = msg.cmdId ? terminalMap.get(msg.cmdId) : null;
+    if (!entry) return;
+    entry.pre.textContent += msg.data;
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 }
@@ -476,6 +485,9 @@ function onWsMessage(ev) {
     return;
   }
   if (typ === 'run_command_start') {
+    // cmd_id is provided by the backend; multiple commands can run in parallel.
+    const cmdId = msg.cmd_id || `fallback_${Date.now()}`;
+
     const d = document.createElement('details');
     d.className = 'command-result-block terminal-block terminal-collapsible';
     const summary = document.createElement('summary');
@@ -489,32 +501,34 @@ function onWsMessage(ev) {
     d.appendChild(pre);
     messagesEl.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    currentTerminalBlock = d;
-    currentTerminalPre = pre;
 
-    // Record command; we'll update output when it finishes
+    // Register this terminal in the map so stream data can be routed here.
+    terminalMap.set(cmdId, { block: d, pre });
+
+    // Record command in conversation history; output filled when done.
     const cmdRecord = {
       type: 'command',
       command: msg.command || '',
       output: '',
       timestamp: new Date().toISOString(),
     };
-    currentCommandRecordIdx = currentConversationMessages.length;
+    const cmdRecordIdx = currentConversationMessages.length;
     currentConversationMessages.push(cmdRecord);
 
     if (window.electronAPI && typeof window.electronAPI.runInteractiveCommand === 'function') {
-      window.electronAPI.runInteractiveCommand(msg.command || '').then((result) => {
-        // Update stored command output
-        if (currentCommandRecordIdx >= 0) {
-          currentConversationMessages[currentCommandRecordIdx].output =
-            (currentTerminalPre ? currentTerminalPre.textContent : '') || result.stdout || '';
-          currentCommandRecordIdx = -1;
-          saveCurrentConversation();
-        }
+      window.electronAPI.runInteractiveCommand(msg.command || '', cmdId).then((result) => {
+        // Capture full streamed output from the terminal pre element.
+        const entry = terminalMap.get(cmdId);
+        currentConversationMessages[cmdRecordIdx].output =
+          (entry ? entry.pre.textContent : '') || result.stdout || '';
+        terminalMap.delete(cmdId);
+        saveCurrentConversation();
+
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'command_result',
             payload: {
+              cmd_id: cmdId,
               stdout: result.stdout || '',
               stderr: result.stderr || '',
               returncode: result.returncode ?? 0,
@@ -536,6 +550,23 @@ function onWsMessage(ev) {
       step_id: msg.step_id,
       timestamp: new Date().toISOString(),
     });
+    return;
+  }
+  // step_failed: one step failed independently — does NOT end the workflow.
+  // Sibling parallel steps continue; dependent steps are skipped by the backend.
+  if (typ === 'step_failed') {
+    const d = document.createElement('div');
+    d.className = 'step-badge step-failed';
+    d.textContent = `Step ${msg.step_id} failed${msg.reason ? ': ' + msg.reason : ''}`;
+    messagesEl.appendChild(d);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    currentConversationMessages.push({
+      type: 'step_failed',
+      step_id: msg.step_id,
+      reason: msg.reason || '',
+      timestamp: new Date().toISOString(),
+    });
+    saveCurrentConversation();
     return;
   }
   if (typ === 'workflow_done') {

@@ -181,15 +181,23 @@ async def ws_endpoint(websocket: WebSocket):
             elif typ == "command_result":
                 # Command finished on the user's machine; resume the awaiting agent step.
                 payload = msg.get("payload") or {}
-                fut = getattr(session, "pending_command_result", None)
-                if fut is not None and not fut.done():
-                    fut.set_result(
-                        {
-                            "stdout": str(payload.get("stdout") or ""),
-                            "stderr": str(payload.get("stderr") or ""),
-                            "returncode": int(payload.get("returncode") or 0),
-                        }
-                    )
+                cmd_id = payload.get("cmd_id")
+                result_val = {
+                    "stdout": str(payload.get("stdout") or ""),
+                    "stderr": str(payload.get("stderr") or ""),
+                    "returncode": int(payload.get("returncode") or 0),
+                }
+                # Route to the correct future by cmd_id (parallel execution)
+                if cmd_id and cmd_id in session.pending_command_results:
+                    fut = session.pending_command_results.get(cmd_id)
+                    if fut is not None and not fut.done():
+                        fut.set_result(result_val)
+                else:
+                    # Fallback: resolve any single pending future (legacy / no cmd_id)
+                    for fut in list(session.pending_command_results.values()):
+                        if not fut.done():
+                            fut.set_result(result_val)
+                            break
             elif typ == "stop":
                 # User requested to stop the current workflow.
                 session.cancelled = True  # type: ignore[attr-defined]
@@ -198,8 +206,14 @@ async def ws_endpoint(websocket: WebSocket):
                 if agent_task is not None and not agent_task.done():
                     agent_task.cancel()
 
-                # Cancel any pending waiters so the session can cleanly reset.
-                for fut_name in ("pending_confirmation", "pending_command_result", "pending_user_input"):
+                # Cancel all pending command futures (parallel execution may have several).
+                for fut in list(session.pending_command_results.values()):
+                    if not fut.done():
+                        fut.cancel()
+                session.pending_command_results.clear()
+
+                # Cancel interaction futures.
+                for fut_name in ("pending_confirmation", "pending_user_input"):
                     fut = getattr(session, fut_name, None)
                     if fut is not None and not fut.done():
                         fut.cancel()

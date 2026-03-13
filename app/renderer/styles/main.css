@@ -614,6 +614,12 @@ body {
   color: #9ca3af;
 }
 
+.step-badge.step-failed {
+  background: #2d0a0a;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
 .workflow-done,
 .workflow-stopped {
   align-self: flex-start;
