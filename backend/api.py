@@ -125,13 +125,25 @@ async def ws_endpoint(websocket: WebSocket):
             msg = json.loads(raw)
             typ = msg.get("type")
             if typ == "start":
-                message = (msg.get("payload") or {}).get("message", "").strip()
-                provider = (msg.get("payload") or {}).get("provider")
-                model = (msg.get("payload") or {}).get("model")
-                context = (msg.get("payload") or {}).get("context")
+                payload = msg.get("payload") or {}
+                message = payload.get("message", "").strip()
+                provider = payload.get("provider")
+                model = payload.get("model")
+                context = payload.get("context")
                 if not message or not provider:
                     await send({"type": "error", "error": "message and provider required"})
                     continue
+
+                # Seed conversation history from the desktop client on the first turn of this
+                # WS session (session.conversation_history is empty on a fresh connection).
+                # This lets "continue conversation" work correctly after reconnecting.
+                prior_history = payload.get("conversation_history") or []
+                if not session.conversation_history and prior_history:
+                    session.conversation_history = [
+                        {"role": str(h.get("role", "")), "content": str(h.get("content", ""))}
+                        for h in prior_history
+                        if h.get("role") in ("user", "assistant") and h.get("content")
+                    ]
 
                 # Record this user turn into persistent history before planning
                 _append_history(session.conversation_history, "user", message)

@@ -9,38 +9,51 @@
 </head>
 <body>
   <div class="app-shell">
-    <div class="messages" id="messages"></div>
-    <div class="queue-container" id="queue-container"></div>
-    <div class="input-row">
-      <select id="model-select"></select>
-      <label class="agent-toggle">
-        <input type="checkbox" id="use-agent" />
-        <span>Agent</span>
-      </label>
-      <input type="text" id="chat-input" placeholder="Describe what you want done..." autofocus autocomplete="off" />
-      <button id="send-btn" type="button">
-        <span id="send-icon-send" class="send-icon send-icon-send"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path 
-              d="M12 19V7M7 12L12 7L17 12"
-              stroke="currentColor"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg></span>
-        <span id="send-icon-cancel" class="send-icon send-icon-cancel">
-            <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <rect 
-                  x="5.5" 
-                  y="5.5" 
-                  width="13" 
-                  height="13" 
-                  rx="4"
-                  fill="currentColor"
-                />
-              </svg>
-        </span>
-      </button>
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-drag-region">
+        <button id="new-chat-btn" class="new-chat-btn" title="New Chat">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+          New Chat
+        </button>
+      </div>
+      <div class="sidebar-list" id="sidebar-list"></div>
+    </aside>
+    <div class="main-area">
+      <div class="messages" id="messages"></div>
+      <div class="queue-container" id="queue-container"></div>
+      <div class="input-row">
+        <select id="model-select"></select>
+        <label class="agent-toggle">
+          <input type="checkbox" id="use-agent" />
+          <span>Agent</span>
+        </label>
+        <input type="text" id="chat-input" placeholder="Describe what you want done..." autofocus autocomplete="off" />
+        <button id="send-btn" type="button">
+          <span id="send-icon-send" class="send-icon send-icon-send"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path
+                d="M12 19V7M7 12L12 7L17 12"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg></span>
+          <span id="send-icon-cancel" class="send-icon send-icon-cancel">
+              <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <rect
+                    x="5.5"
+                    y="5.5"
+                    width="13"
+                    height="13"
+                    rx="4"
+                    fill="currentColor"
+                  />
+                </svg>
+          </span>
+        </button>
+      </div>
     </div>
   </div>
   <script src="index.js"></script>

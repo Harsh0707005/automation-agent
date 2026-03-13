@@ -8,4 +8,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       if (typeof handler === 'function') handler(msg);
     });
   },
+  // Conversation history (desktop-side storage only)
+  listConversations: () => ipcRenderer.invoke('list-conversations'),
+  getConversation: (id) => ipcRenderer.invoke('get-conversation', id),
+  saveConversation: (conv) => ipcRenderer.invoke('save-conversation', conv),
+  deleteConversation: (id) => ipcRenderer.invoke('delete-conversation', id),
 });

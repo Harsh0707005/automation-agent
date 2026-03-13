@@ -98,8 +98,47 @@ function getDeviceContext() {
   return ctx;
 }
 
+function getConversationsDir() {
+  const dir = path.join(app.getPath('userData'), 'conversations');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 app.whenReady().then(() => {
   ipcMain.handle('get-device-context', getDeviceContext);
+
+  ipcMain.handle('list-conversations', () => {
+    const dir = getConversationsDir();
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const convs = [];
+    for (const f of files) {
+      try {
+        const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        convs.push({ id: d.id, title: d.title, createdAt: d.createdAt, updatedAt: d.updatedAt });
+      } catch (_) {}
+    }
+    return convs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  });
+
+  ipcMain.handle('get-conversation', (_, id) => {
+    const dir = getConversationsDir();
+    const file = path.join(dir, `${id}.json`);
+    if (!fs.existsSync(file)) return null;
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
+  });
+
+  ipcMain.handle('save-conversation', (_, conv) => {
+    const dir = getConversationsDir();
+    fs.writeFileSync(path.join(dir, `${conv.id}.json`), JSON.stringify(conv), 'utf8');
+    return true;
+  });
+
+  ipcMain.handle('delete-conversation', (_, id) => {
+    const dir = getConversationsDir();
+    const file = path.join(dir, `${id}.json`);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return true;
+  });
 
   ipcMain.handle('run-interactive-command', async (event, command) => {
     const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];

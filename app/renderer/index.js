@@ -19,6 +19,26 @@ function renderMarkdown(text) {
     .replace(/$/, '</p>');
 }
 
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function formatRelativeTime(isoString) {
+  const date = new Date(isoString);
+  const now = new Date();
+  const diff = now - date;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
+
+// ─── DOM refs ────────────────────────────────────────────────────────────────
+
 const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const sendIconSend = document.getElementById('send-icon-send');
@@ -26,6 +46,10 @@ const sendIconCancel = document.getElementById('send-icon-cancel');
 const messagesEl = document.getElementById('messages');
 const modelSelect = document.getElementById('model-select');
 const queueContainer = document.getElementById('queue-container');
+const sidebarList = document.getElementById('sidebar-list');
+const newChatBtn = document.getElementById('new-chat-btn');
+
+// ─── Runtime state ────────────────────────────────────────────────────────────
 
 let availableModels = [];
 let typingBubble = null;
@@ -38,7 +62,226 @@ let queuedAgentRequests = [];
 let nextQueueId = 1;
 let cancellingWorkflow = false;
 
-// Wire up streaming output from Electron main (user-side command execution).
+// ─── Conversation state ───────────────────────────────────────────────────────
+
+let currentConversationId = generateId();
+let currentConversationMessages = []; // structured records for persistence
+let conversationTitle = null;
+let currentCommandRecordIdx = -1;   // index into currentConversationMessages for in-flight command
+
+// How many recent user↔assistant turn-pairs to send verbatim; older turns are collapsed into summaries.
+const RECENT_TURNS = 6;
+
+/**
+ * Build the `conversation_history` array to seed the backend session.
+ * Strategy:
+ *   - Extract only meaningful turns: user messages + workflow_done summaries (already LLM-condensed).
+ *   - Exclude the most-recent user message (it's already sent as payload.message and
+ *     appended by the backend — sending it here too would duplicate it).
+ *   - Keep the last RECENT_TURNS entries verbatim.
+ *   - Condense anything older into a single assistant message built from prior summaries.
+ */
+function buildContextForBackend() {
+  const msgs = currentConversationMessages.slice();
+
+  // Drop the last user message — it travels as payload.message separately.
+  const lastUserIdx = msgs.reduce((acc, m, i) => (m.type === 'user' ? i : acc), -1);
+  const historyMsgs = lastUserIdx >= 0 ? msgs.slice(0, lastUserIdx) : msgs;
+
+  // Flatten into [{role, content}] keeping only user intent + assistant summaries.
+  const turns = [];
+  for (const msg of historyMsgs) {
+    if (msg.type === 'user') {
+      turns.push({ role: 'user', content: msg.text });
+    } else if (msg.type === 'workflow_done' && msg.summary) {
+      turns.push({ role: 'assistant', content: msg.summary });
+    }
+  }
+
+  if (turns.length === 0) return [];
+  if (turns.length <= RECENT_TURNS) return turns;
+
+  // Split into recent (verbatim) and older (collapsed into summary).
+  const recent = turns.slice(-RECENT_TURNS);
+  const older = turns.slice(0, -RECENT_TURNS);
+
+  // Older assistant summaries are already LLM-condensed — just concatenate them.
+  const olderSummaryText = older
+    .filter((t) => t.role === 'assistant')
+    .map((t) => t.content)
+    .join('\n\n---\n\n');
+
+  const result = [];
+  if (olderSummaryText) {
+    result.push({ role: 'assistant', content: `Earlier conversation summary:\n${olderSummaryText}` });
+  }
+  result.push(...recent);
+  return result;
+}
+
+// ─── Conversation persistence ─────────────────────────────────────────────────
+
+async function saveCurrentConversation() {
+  if (!window.electronAPI?.saveConversation) return;
+  if (!currentConversationMessages.length) return;
+  const now = new Date().toISOString();
+  await window.electronAPI.saveConversation({
+    id: currentConversationId,
+    title: conversationTitle || 'New Chat',
+    createdAt: currentConversationMessages[0]?.timestamp || now,
+    updatedAt: now,
+    messages: currentConversationMessages,
+  });
+  await refreshSidebar();
+}
+
+async function refreshSidebar() {
+  if (!sidebarList || !window.electronAPI?.listConversations) return;
+  const convs = await window.electronAPI.listConversations();
+  sidebarList.innerHTML = '';
+  for (const conv of convs) {
+    const item = document.createElement('div');
+    item.className = 'sidebar-item' + (conv.id === currentConversationId ? ' active' : '');
+    item.dataset.id = conv.id;
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'sidebar-item-title';
+    titleEl.textContent = conv.title;
+
+    const timeEl = document.createElement('div');
+    timeEl.className = 'sidebar-item-time';
+    timeEl.textContent = formatRelativeTime(conv.updatedAt);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'sidebar-item-delete';
+    delBtn.title = 'Delete conversation';
+    delBtn.textContent = '×';
+    delBtn.onclick = async (e) => {
+      e.stopPropagation();
+      await window.electronAPI.deleteConversation(conv.id);
+      if (conv.id === currentConversationId) startNewConversation();
+      else refreshSidebar();
+    };
+
+    item.appendChild(titleEl);
+    item.appendChild(timeEl);
+    item.appendChild(delBtn);
+    item.onclick = () => {
+      if (activeAgentWorkflow) return; // don't switch while a task is running
+      openConversation(conv.id);
+    };
+    sidebarList.appendChild(item);
+  }
+}
+
+async function openConversation(id) {
+  if (!window.electronAPI?.getConversation) return;
+  const conv = await window.electronAPI.getConversation(id);
+  if (!conv) return;
+
+  // Reset runtime state
+  currentConversationId = id;
+  currentConversationMessages = conv.messages || [];
+  conversationTitle = conv.title;
+  queuedAgentRequests = [];
+  renderQueue();
+
+  // Clear and re-render chat from stored messages
+  messagesEl.innerHTML = '';
+  for (const msg of currentConversationMessages) {
+    renderStoredMessage(msg);
+  }
+
+  await refreshSidebar();
+  input.focus();
+}
+
+function startNewConversation() {
+  currentConversationId = generateId();
+  currentConversationMessages = [];
+  conversationTitle = null;
+  queuedAgentRequests = [];
+  renderQueue();
+  messagesEl.innerHTML = '';
+  refreshSidebar();
+  input.focus();
+}
+
+/** Render a stored message record back into the DOM (no recording). */
+function renderStoredMessage(msg) {
+  switch (msg.type) {
+    case 'user':
+      appendMessage(msg.text, true, false);
+      break;
+    case 'assistant':
+      appendMessage(msg.text, false, false);
+      break;
+    case 'plan':
+      showPlan(msg.plan, false);
+      break;
+    case 'step_start': {
+      const badge = document.createElement('div');
+      badge.className = 'step-badge';
+      badge.textContent = `Step ${msg.step_id}: ${msg.description || ''}`;
+      messagesEl.appendChild(badge);
+      break;
+    }
+    case 'step_complete': {
+      const d = document.createElement('div');
+      d.className = 'step-badge';
+      d.textContent = `Step ${msg.step_id} complete`;
+      messagesEl.appendChild(d);
+      break;
+    }
+    case 'command': {
+      const d = document.createElement('details');
+      d.className = 'command-result-block terminal-block terminal-collapsible';
+      const summary = document.createElement('summary');
+      const heading = document.createElement('span');
+      heading.className = 'terminal-heading';
+      heading.textContent = `Running: ${msg.command || ''}`;
+      summary.appendChild(heading);
+      d.appendChild(summary);
+      if (msg.output) {
+        const pre = document.createElement('pre');
+        pre.className = 'terminal-output';
+        pre.textContent = msg.output;
+        d.appendChild(pre);
+      }
+      messagesEl.appendChild(d);
+      break;
+    }
+    case 'workflow_done': {
+      if (msg.summary && msg.summary.trim()) {
+        const d = document.createElement('div');
+        d.className = 'workflow-done';
+        const summaryEl = document.createElement('div');
+        summaryEl.className = 'workflow-done-summary';
+        summaryEl.innerHTML = renderMarkdown(msg.summary);
+        d.appendChild(summaryEl);
+        messagesEl.appendChild(d);
+      }
+      break;
+    }
+    case 'workflow_stopped': {
+      const d = document.createElement('div');
+      d.className = 'workflow-stopped';
+      d.textContent = msg.reason || 'Stopped.';
+      messagesEl.appendChild(d);
+      break;
+    }
+    case 'error': {
+      appendMessage(`Error: ${msg.error || 'Unknown'}`, false, false);
+      break;
+    }
+    default:
+      break;
+  }
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// ─── Streaming command output ──────────────────────────────────────────────────
+
 if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'function') {
   window.electronAPI.onCommandStream((msg) => {
     if (!msg || typeof msg.data !== 'string') return;
@@ -47,12 +290,33 @@ if (window.electronAPI && typeof window.electronAPI.onCommandStream === 'functio
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 }
-function appendMessage(text, isUser = true) {
+
+// ─── Message helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Append a text message bubble to the chat.
+ * @param {string} text
+ * @param {boolean} isUser
+ * @param {boolean} record - whether to record into conversation history (default true)
+ */
+function appendMessage(text, isUser = true, record = true) {
   const div = document.createElement('div');
   div.className = `message ${isUser ? 'user' : 'assistant'}`;
   div.textContent = text;
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  if (record) {
+    if (isUser && !conversationTitle) {
+      conversationTitle = text.length > 60 ? text.slice(0, 60) + '…' : text;
+    }
+    currentConversationMessages.push({
+      type: isUser ? 'user' : 'assistant',
+      text,
+      timestamp: new Date().toISOString(),
+    });
+    saveCurrentConversation();
+  }
 }
 
 function showTypingBubble() {
@@ -77,6 +341,8 @@ function hideTypingBubble() {
   typingBubble = null;
 }
 
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+
 function ensureWs() {
   if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -91,6 +357,8 @@ function ensureWs() {
     w.onmessage = onWsMessage;
   });
 }
+
+// ─── Task queue UI ────────────────────────────────────────────────────────────
 
 function renderQueue() {
   if (!queueContainer) return;
@@ -136,7 +404,6 @@ async function startNextQueuedAgentRequest() {
   renderQueue();
   if (!next) return;
 
-  // Now that it is actually starting, show the queued user message in the chat.
   appendMessage(next.text);
   activeAgentWorkflow = true;
   cancellingWorkflow = false;
@@ -150,6 +417,7 @@ async function startNextQueuedAgentRequest() {
         provider: next.provider,
         model: next.model,
         context: next.context,
+        conversation_history: buildContextForBackend(),
       },
     }));
   } catch (err) {
@@ -161,6 +429,8 @@ async function startNextQueuedAgentRequest() {
   }
 }
 
+// ─── WebSocket message handler ────────────────────────────────────────────────
+
 function onWsMessage(ev) {
   let msg;
   try {
@@ -169,10 +439,8 @@ function onWsMessage(ev) {
     return;
   }
   const typ = msg.type;
-  if (cancellingWorkflow && typ !== 'workflow_stopped') {
-    // Ignore any in-flight messages from a workflow we've cancelled.
-    return;
-  }
+  if (cancellingWorkflow && typ !== 'workflow_stopped') return;
+
   if (typ === 'plan') {
     hideTypingBubble();
     showPlan(msg.plan);
@@ -181,6 +449,7 @@ function onWsMessage(ev) {
   if (typ === 'error') {
     hideTypingBubble();
     appendMessage(`Error: ${msg.error || 'Unknown'}`, false);
+    // Also record as error type for history
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
     startNextQueuedAgentRequest();
@@ -194,6 +463,12 @@ function onWsMessage(ev) {
     badge.textContent = `Step ${msg.step_id}: ${msg.description || ''}`;
     messagesEl.appendChild(badge);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    currentConversationMessages.push({
+      type: 'step_start',
+      step_id: msg.step_id,
+      description: msg.description || '',
+      timestamp: new Date().toISOString(),
+    });
     return;
   }
   if (typ === 'step_message' && msg.message) {
@@ -217,10 +492,25 @@ function onWsMessage(ev) {
     currentTerminalBlock = d;
     currentTerminalPre = pre;
 
-    // Kick off command execution on the user's machine via Electron main.
+    // Record command; we'll update output when it finishes
+    const cmdRecord = {
+      type: 'command',
+      command: msg.command || '',
+      output: '',
+      timestamp: new Date().toISOString(),
+    };
+    currentCommandRecordIdx = currentConversationMessages.length;
+    currentConversationMessages.push(cmdRecord);
+
     if (window.electronAPI && typeof window.electronAPI.runInteractiveCommand === 'function') {
       window.electronAPI.runInteractiveCommand(msg.command || '').then((result) => {
-        // Send the final result back to the backend so the agent can continue.
+        // Update stored command output
+        if (currentCommandRecordIdx >= 0) {
+          currentConversationMessages[currentCommandRecordIdx].output =
+            (currentTerminalPre ? currentTerminalPre.textContent : '') || result.stdout || '';
+          currentCommandRecordIdx = -1;
+          saveCurrentConversation();
+        }
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'command_result',
@@ -235,13 +525,17 @@ function onWsMessage(ev) {
     }
     return;
   }
-  // Note: 'command_result' messages now flow from the renderer TO backend, not from backend to renderer.
   if (typ === 'step_complete') {
     const d = document.createElement('div');
     d.className = 'step-badge';
     d.textContent = `Step ${msg.step_id} complete`;
     messagesEl.appendChild(d);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    currentConversationMessages.push({
+      type: 'step_complete',
+      step_id: msg.step_id,
+      timestamp: new Date().toISOString(),
+    });
     return;
   }
   if (typ === 'workflow_done') {
@@ -255,6 +549,12 @@ function onWsMessage(ev) {
       messagesEl.appendChild(d);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
+    currentConversationMessages.push({
+      type: 'workflow_done',
+      summary: msg.summary || '',
+      timestamp: new Date().toISOString(),
+    });
+    saveCurrentConversation();
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
     startNextQueuedAgentRequest();
@@ -311,9 +611,7 @@ function onWsMessage(ev) {
 
     function submitAnswer(answer) {
       if (!answer.trim()) return;
-      // Disable all interactive elements
       block.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
-      // Echo the chosen answer as a user bubble
       appendMessage(answer.trim());
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'ask_user_response', payload: { answer: answer.trim() } }));
@@ -359,13 +657,18 @@ function onWsMessage(ev) {
   }
   if (typ === 'workflow_stopped') {
     hideTypingBubble();
-    // Only show the message if we didn't already show it optimistically on click.
     if (!cancellingWorkflow) {
       const d = document.createElement('div');
       d.className = 'workflow-stopped';
       d.textContent = msg.reason || 'Stopped.';
       messagesEl.appendChild(d);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+      currentConversationMessages.push({
+        type: 'workflow_stopped',
+        reason: msg.reason || 'Stopped.',
+        timestamp: new Date().toISOString(),
+      });
+      saveCurrentConversation();
     }
     activeAgentWorkflow = false;
     cancellingWorkflow = false;
@@ -376,7 +679,9 @@ function onWsMessage(ev) {
   }
 }
 
-function showPlan(planData) {
+// ─── Plan display ─────────────────────────────────────────────────────────────
+
+function showPlan(planData, record = true) {
   const block = document.createElement('div');
   block.className = 'plan-block';
   const h4 = document.createElement('h4');
@@ -391,19 +696,17 @@ function showPlan(planData) {
   block.appendChild(ol);
   messagesEl.appendChild(block);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  if (record) {
+    currentConversationMessages.push({
+      type: 'plan',
+      plan: planData,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
-function showCommandResult(stdout, stderr, returncode) {
-  const block = document.createElement('div');
-  block.className = 'command-result-block';
-  const lines = [];
-  if (returncode !== undefined && returncode !== 0) lines.push(`Exit code: ${returncode}`);
-  if (stderr && stderr.trim()) lines.push('Stderr:\n' + stderr.trim());
-  if (stdout && stdout.trim()) lines.push('Output:\n' + stdout.trim());
-  block.textContent = lines.length ? lines.join('\n\n') : '(no output)';
-  messagesEl.appendChild(block);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-}
+// ─── Model loading ────────────────────────────────────────────────────────────
 
 async function loadModels() {
   try {
@@ -441,13 +744,14 @@ function getFallbackContext() {
   return { platform, user_agent: ua.slice(0, 200), source: 'renderer' };
 }
 
+// ─── Send / cancel ────────────────────────────────────────────────────────────
+
 async function send() {
   const text = input.value.trim();
   if (!text) return;
   const useAgent = document.getElementById('use-agent').checked;
   const selected = getSelectedModel();
 
-  // Non-agent or no model selected: behave as a simple chat, no queueing.
   if (!useAgent || !selected) {
     appendMessage(text);
     input.value = '';
@@ -488,8 +792,8 @@ async function send() {
         else data.responses.forEach((r) => { if (r?.content) appendMessage(`${r.provider}: ${r.content}`, false); });
       }
     } catch (err) {
-      const msg = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Backend unreachable');
-      appendMessage(`Error: ${msg}`, false);
+      const errMsg = err.name === 'AbortError' ? 'Request timed out' : (err.message || 'Backend unreachable');
+      appendMessage(`Error: ${errMsg}`, false);
     } finally {
       hideTypingBubble();
       input.focus();
@@ -498,7 +802,6 @@ async function send() {
     return;
   }
 
-  // Agent mode with a selected model: support queueing.
   input.value = '';
   sendBtn.disabled = true;
 
@@ -522,7 +825,6 @@ async function send() {
   };
 
   if (!activeAgentWorkflow) {
-    // First / only active workflow: show immediately in chat.
     appendMessage(text);
     activeAgentWorkflow = true;
     cancellingWorkflow = false;
@@ -537,6 +839,7 @@ async function send() {
           provider: requestPayload.provider,
           model: requestPayload.model,
           context: requestPayload.context,
+          conversation_history: buildContextForBackend(),
         },
       }));
     } catch (err) {
@@ -546,7 +849,6 @@ async function send() {
       updateSendState();
     }
   } else {
-    // Already running: just enqueue; don't show user bubble yet.
     queuedAgentRequests.push(requestPayload);
     renderQueue();
     input.focus();
@@ -561,7 +863,6 @@ function updateSendState() {
 
   if (activeAgentWorkflow && agentEnabled) {
     if (hasText) {
-      // While a task is running, any text means "queue this" (send mode with arrow).
       sendBtn.disabled = false;
       sendBtn.dataset.mode = 'send';
       sendBtn.classList.remove('cancel-mode');
@@ -569,7 +870,6 @@ function updateSendState() {
       if (sendIconSend) sendIconSend.style.display = 'inline-flex';
       if (sendIconCancel) sendIconCancel.style.display = 'none';
     } else {
-      // No text while a task is running: show cancel/stop button.
       sendBtn.disabled = false;
       sendBtn.dataset.mode = 'cancel';
       sendBtn.classList.remove('send-mode');
@@ -580,7 +880,6 @@ function updateSendState() {
     return;
   }
 
-  // No active agent workflow: standard send behavior with up-arrow.
   sendBtn.dataset.mode = 'send';
   sendBtn.classList.remove('cancel-mode');
   sendBtn.classList.add('send-mode');
@@ -592,7 +891,6 @@ function updateSendState() {
 function cancelCurrentWorkflow() {
   if (!activeAgentWorkflow) return;
 
-  // Immediately update UI — don't wait for backend confirmation.
   cancellingWorkflow = true;
   activeAgentWorkflow = false;
   hideTypingBubble();
@@ -602,6 +900,13 @@ function cancelCurrentWorkflow() {
   d.textContent = 'Stopped.';
   messagesEl.appendChild(d);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  currentConversationMessages.push({
+    type: 'workflow_stopped',
+    reason: 'Stopped.',
+    timestamp: new Date().toISOString(),
+  });
+  saveCurrentConversation();
 
   updateSendState();
   input.focus();
@@ -625,6 +930,8 @@ async function handleSendOrCancel() {
   }
 }
 
+// ─── Event listeners ──────────────────────────────────────────────────────────
+
 input.addEventListener('input', updateSendState);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -635,6 +942,14 @@ input.addEventListener('keydown', (e) => {
 sendBtn.addEventListener('click', () => {
   handleSendOrCancel();
 });
+
+if (newChatBtn) {
+  newChatBtn.addEventListener('click', () => {
+    if (activeAgentWorkflow) return;
+    startNewConversation();
+  });
+}
+
 updateSendState();
 
 // Default to Agent mode on app open
@@ -643,4 +958,7 @@ if (useAgentCheckbox) {
   useAgentCheckbox.checked = true;
 }
 
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
 loadModels();
+refreshSidebar();
