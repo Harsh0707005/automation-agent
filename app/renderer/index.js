@@ -135,6 +135,51 @@ async function saveCurrentConversation() {
   await refreshSidebar();
 }
 
+/**
+ * Fire-and-forget helper that asks the backend LLM to propose a conversation
+ * title from the first user message. Runs fully in the background and never
+ * blocks the main send flow.
+ *
+ * @param {string} firstMessage
+ * @param {string | null} provider
+ * @param {string | null} model
+ */
+function maybeGenerateConversationTitleInBackground(firstMessage, provider, model) {
+  // Only attempt this on the very first user message of a fresh conversation.
+  if (
+    !firstMessage ||
+    currentConversationMessages.length !== 1 ||
+    currentConversationMessages[0]?.type !== 'user'
+  ) {
+    return;
+  }
+
+  const payload = {
+    message: firstMessage,
+    provider: provider || null,
+    model: model || null,
+  };
+
+  // Fire-and-forget: we intentionally do not await this.
+  (async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/title`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data || !data.ok || !data.title) return;
+
+      conversationTitle = String(data.title).slice(0, 120);
+      // Persist updated title and refresh sidebar; this stays lightweight.
+      await saveCurrentConversation();
+    } catch (_) {
+      // Swallow errors: title generation is best-effort only.
+    }
+  })();
+}
+
 async function refreshSidebar() {
   if (!sidebarList || !window.electronAPI?.listConversations) return;
   const convs = await window.electronAPI.listConversations();
@@ -414,6 +459,7 @@ async function startNextQueuedAgentRequest() {
   if (!next) return;
 
   appendMessage(next.text);
+  maybeGenerateConversationTitleInBackground(next.text, next.provider || null, next.model || null);
   activeAgentWorkflow = true;
   cancellingWorkflow = false;
   showTypingBubble();
@@ -785,6 +831,12 @@ async function send() {
 
   if (!useAgent || !selected) {
     appendMessage(text);
+    // First user message in a new conversation: kick off background title generation.
+    maybeGenerateConversationTitleInBackground(
+      text,
+      selected ? selected.provider : null,
+      selected ? selected.model : null,
+    );
     input.value = '';
     sendBtn.disabled = true;
 
@@ -857,6 +909,8 @@ async function send() {
 
   if (!activeAgentWorkflow) {
     appendMessage(text);
+    // First user message in a new conversation: kick off background title generation.
+    maybeGenerateConversationTitleInBackground(text, selected.provider, selected.model);
     activeAgentWorkflow = true;
     cancellingWorkflow = false;
     updateSendState();

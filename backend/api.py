@@ -42,6 +42,12 @@ class MessageRequest(BaseModel):
     context: Optional[dict[str, Any]] = None
 
 
+class TitleResponse(BaseModel):
+    ok: bool
+    title: Optional[str] = None
+    error: Optional[str] = None
+
+
 class ModelInfo(BaseModel):
     id: str
     provider: str
@@ -317,4 +323,42 @@ def post_message(req: MessageRequest):
             responses.append({"provider": provider, "error": str(e)})
             print(f"[{provider}] error: {e}")
     return {"ok": True, "responses": responses}
+
+
+@app.post("/title", response_model=TitleResponse)
+def post_title(req: MessageRequest) -> TitleResponse:
+    """Generate a short conversation title from the initial user message.
+
+    This is intentionally lightweight and is used by the desktop client in the
+    background so it must not block or be overly expensive.
+    """
+    prompt = (req.message or "").strip()
+    if not prompt:
+        return TitleResponse(ok=False, error="Empty message")
+
+    # Keep the instruction small and cheap but constrained so we get a usable title.
+    instruction = (
+        "Generate a short, descriptive title (max 6 words) for this conversation.\n"
+        "Requirements:\n"
+        "- Do NOT wrap the title in quotes.\n"
+        "- Use Title Case.\n"
+        "- No trailing punctuation.\n\n"
+        f"User's first message:\n{prompt}"
+    )
+
+    provider = req.provider
+    model = req.model
+
+    # Fallback to engine defaults if no provider/model were specified.
+    if not provider:
+        provider = engine.get_providers()[0]
+
+    try:
+        result = engine.complete(instruction, provider=provider, model=model)
+        title = (result.content or "").strip()
+        if not title:
+            return TitleResponse(ok=False, error="Empty title from model")
+        return TitleResponse(ok=True, title=title)
+    except Exception as e:
+        return TitleResponse(ok=False, error=str(e))
 
