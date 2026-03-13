@@ -44,3 +44,44 @@ Once the summary is generated, the context sent to future LLM calls is structure
 The last two messages are preserved without summarization because they often contain immediate instructions, clarifications, or context that is critical for the next reasoning step. Summarizing them could remove important short term information.
 
 This approach allows the agent to maintain awareness of the full conversation while remaining within LLM context limits and keeping token usage efficient. The summarization process happens internally as part of the system’s context management and is not visible to the user.
+
+Memory Creation Logic
+
+In addition to short term conversational context, the agent maintains a structured memory layer that stores important long term information extracted from interactions with the user. The purpose of this memory is to allow the system to improve future reasoning by remembering relevant facts, preferences, and patterns observed during previous interactions.
+
+Memory creation is executed continuously during the conversation lifecycle. Each interaction between the user and the agent forms a message pair consisting of a user message and the corresponding assistant response. After every completed pair, a memory extraction process is triggered.
+
+During this process, the system evaluates the message pair and determines whether any information within it should be converted into long term memory. The goal is to extract information that is stable over time and likely to be useful for future interactions.
+
+A memory chunk represents a single meaningful piece of information that the system should retain. Examples of valid memory candidates include the following.
+
+User preferences such as communication style or tone
+Explicit instructions provided by the user that should persist across tasks
+Information about the user's environment such as operating system, device type, or frequently used tools
+Workflows or processes explained by the user that the agent may reuse later
+Behavioral patterns that influence how the agent should interact with the user
+Facts that the user explicitly requests the system to remember
+
+The system must not store the entire user and assistant message pair as raw memory. Instead, the interaction must be compressed into a concise representation that preserves the important information in a minimal and structured form. Memory entries should contain only the essential detail required for future reasoning while maintaining the correct context and meaning of the information.
+
+This compression step ensures that memory remains efficient, structured, and free of unnecessary conversational content. The goal is to retain accurate facts and instructions without storing redundant dialogue.
+
+Memory generation must be strictly grounded in information explicitly provided by the user. The system must never fabricate or infer new details when creating memory entries. If a piece of information was not clearly stated by the user, it must not be stored as memory. Memory should always reflect what the user actually said rather than what the system assumes.
+
+Memory must only contain information that is relatively stable. The system must avoid storing volatile or time dependent information. For example the number of files in a directory, temporary system state, or the contents of files should not be stored because these values change frequently and would quickly become incorrect.
+
+However structural information such as the location of an important directory or a preferred workspace path can be stored because it remains relatively stable.
+
+Memory extraction must also respect user intent. Information should never be stored if the user explicitly requests that it should not be remembered. Trivial or irrelevant details should also be ignored to avoid polluting the memory system with low value data.
+
+For the current implementation, memory is stored locally on the user’s device inside the desktop application rather than on the backend. The desktop application acts as the memory holder and manages storage and retrieval of memory chunks.
+
+Whenever the user sends a request, the desktop application first analyzes the request and retrieves only the relevant memory chunks that may help the agent complete the task. These memory chunks are then appended to the request before it is sent to the backend. The backend processes the request together with the attached memory context and generates a response accordingly.
+
+The system must avoid sending the entire memory store with every request. Instead, a relevance filtering step is performed to retrieve only the memory items that are useful for the current request. This filtering can be implemented using semantic similarity through embeddings, keyword matching, text similarity, pattern matching through regular expressions, or other retrieval mechanisms. Only the most relevant memory chunks should be included in the request context.
+
+In some cases the backend may determine that additional memory is required to complete the task. When this happens the backend can explicitly request additional memory from the desktop application. The desktop application then retrieves the requested memory items and sends them back to the backend.
+
+The extracted memory is structured into small independent chunks so that it can be selectively retrieved later. When the agent performs reasoning for a new task, relevant memory chunks can be attached to the context to provide additional background information to the LLM. This allows the agent to behave consistently across interactions and better align with the user’s environment, preferences, and workflows.
+
+The memory extraction logic should remain conservative. The system should prefer storing fewer high quality memory items rather than aggressively storing large amounts of low value information. This approach reduces noise and ensures that the memory layer remains useful and reliable for future reasoning.
