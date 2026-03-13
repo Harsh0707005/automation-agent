@@ -89,13 +89,76 @@ async def ws_endpoint(websocket: WebSocket):
                 if not message or not provider:
                     await send({"type": "error", "error": "message and provider required"})
                     continue
-                session.objective = message
+                # Heuristic: decide whether this is a follow-up on the existing objective
+                lower_msg = message.lower()
+                is_short_ack = len(message) <= 40 and any(
+                    phrase in lower_msg
+                    for phrase in [
+                        "yes",
+                        "ok",
+                        "okay",
+                        "sure",
+                        "continue",
+                        "go ahead",
+                        "yep",
+                        "yeah",
+                        "please do",
+                    ]
+                )
+                # Short referential follow-up like "that 3rd process" or "the first one"
+                is_referential_followup = len(message) <= 120 and any(
+                    phrase in lower_msg
+                    for phrase in [
+                        "process",
+                        "pid",
+                        "first one",
+                        "second one",
+                        "third one",
+                        "3rd",
+                        "2nd",
+                        "1st",
+                        "that one",
+                        "this one",
+                        "above",
+                        "from the list",
+                    ]
+                )
+                has_prior_context = bool(session.objective and session.completed_results)
+
+                if (is_short_ack or is_referential_followup) and has_prior_context:
+                    # Follow-up on previous objective; keep objective but pass both to planner
+                    combined_objective = (
+                        f"Previous user objective: {session.objective}\n"
+                        f"New user message: {message}"
+                    )
+                    planning_request = combined_objective
+                else:
+                    # New objective: reset agent session progress
+                    session.plan = None
+                    session.step_index = 0
+                    session.instruction_index = 0
+                    session.instructions = []
+                    session.completed_results = []
+                    session.last_read_content = ""
+                    session.objective = message
+                    planning_request = message
+
                 session.provider = provider
                 session.model = model
                 session.context = context
                 try:
+                    # Include recent completed_results so the planner can reuse prior outputs
+                    recent_results = session.completed_results or []
                     planned = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: plan(message, engine, provider, model, context=context)
+                        None,
+                        lambda: plan(
+                            planning_request,
+                            engine,
+                            provider,
+                            model,
+                            context=context,
+                            recent_results=recent_results,
+                        ),
                     )
                     session.plan = planned
                     await send({"type": "plan", "plan": planned.model_dump()})

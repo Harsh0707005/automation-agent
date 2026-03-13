@@ -5,6 +5,8 @@ PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant
 2. Do not add preemptive or defensive steps (e.g. "check permissions", "verify access") unless the user explicitly asks. Assume the direct approach first; recovery is handled separately if execution fails.
 3. Keep the plan short and goal-oriented. Use depends_on only when a step truly requires the output of a previous step (e.g. "Kill the PIDs" depends_on ["1"] after "Get PIDs").
 4. If the user specifies a value exactly (e.g. a port number, a path, a command name), preserve that value in the step description so the executor can use it.
+5. You may see recent agent results (previous steps the agent already ran) in the context. If the new user request can be satisfied by *explaining or reusing those results* (e.g. "explain the first process from the list you just showed"), prefer planning *explanation-only* steps (using text responses) instead of re-running similar commands.
+6. When the user refers to "the 3rd process", "the first one", "the second one", or similar ordinal phrases, interpret them relative to the most recent relevant list in the recent agent results (e.g. the top-10 process list you just showed), unless the user clearly specifies a different source.
 </planning_rules>
 
 <output_format>
@@ -40,12 +42,31 @@ Only use tool names and arg keys listed above. Every instruction must have "tool
 </output_format>"""
 
 
-def planning_user_prompt(user_request: str, context: dict | None = None) -> str:
-    base = f"User request: {user_request}\n\nOutput the JSON plan (steps only). Follow the planning_rules and output_format. If the user specifies a value (e.g. port, path, command name), include it in the step descriptions."
+def planning_user_prompt(
+    user_request: str,
+    context: dict | None = None,
+    recent_results: list[tuple[str, str]] | None = None,
+) -> str:
+    base_lines: list[str] = []
     if context:
-        ctx_lines = ["Device context:"] + [f"  {k}: {v}" for k, v in sorted(context.items())]
-        return "\n".join(ctx_lines) + "\n\n" + base
-    return base
+        base_lines.append("Device context:")
+        for k, v in sorted(context.items()):
+            base_lines.append(f"  {k}: {v}")
+        base_lines.append("")
+    if recent_results:
+        base_lines.append("Recent agent results (for context, do not repeat work unnecessarily):")
+        for step_id, result in recent_results[-3:]:
+            snippet = result[:400]
+            if len(result) > 400:
+                snippet += "..."
+            base_lines.append(f"  Step {step_id}: {snippet}")
+        base_lines.append("")
+    base_lines.append(f"User request: {user_request}")
+    base_lines.append(
+        "\nOutput the JSON plan (steps only). Follow the planning_rules and output_format. "
+        "If the user specifies a value (e.g. port, path, command name), include it in the step descriptions."
+    )
+    return "\n".join(base_lines)
 
 
 def step_user_prompt(
@@ -53,11 +74,20 @@ def step_user_prompt(
     objective: str,
     completed_results: list[tuple[str, str]],
     remaining_descriptions: list[str],
+    context: dict | None = None,
 ) -> str:
-    lines = [
-        f"Overall objective: {objective}",
-        f"Current short-term goal (achieve this only): {goal}",
-    ]
+    lines: list[str] = []
+    if context:
+        lines.append("Device context:")
+        for k, v in sorted(context.items()):
+            lines.append(f"  {k}: {v}")
+        lines.append("")
+    lines.extend(
+        [
+            f"Overall objective: {objective}",
+            f"Current short-term goal (achieve this only): {goal}",
+        ]
+    )
     if completed_results:
         lines.append("Completed steps (for context):")
         for step_id, result in completed_results:

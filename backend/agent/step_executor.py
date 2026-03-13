@@ -14,9 +14,10 @@ def get_instructions(
     engine: LLMEngine,
     provider: str,
     model: str | None = None,
+    context: dict | None = None,
 ) -> list[Instruction]:
     import sys
-    full_prompt = f"{STEP_SYSTEM}\n\n{step_user_prompt(goal, objective, completed_results, remaining_descriptions)}"
+    full_prompt = f"{STEP_SYSTEM}\n\n{step_user_prompt(goal, objective, completed_results, remaining_descriptions, context=context)}"
     print(f"[agent] step LLM call (goal={goal[:50]}...)", flush=True)
     sys.stdout.flush()
     result = engine.complete(full_prompt, provider=provider, model=model, timeout=90)

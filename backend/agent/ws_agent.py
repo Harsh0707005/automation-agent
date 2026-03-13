@@ -41,15 +41,18 @@ async def run_agent_ws(send_fn, session: AgentSession):
         if session.instruction_index == 0 or not session.instructions:
             remaining = [s.description for s in steps[session.step_index + 1 :]]
             try:
-                session.instructions = await run_sync(lambda: get_instructions(
-                    step.description,
-                    session.objective,
-                    session.completed_results,
-                    remaining,
-                    engine,
-                    session.provider,
-                    session.model,
-                ))
+                session.instructions = await run_sync(
+                    lambda: get_instructions(
+                        goal=step.description,
+                        objective=session.objective,
+                        completed_results=session.completed_results,
+                        remaining_descriptions=remaining,
+                        engine=engine,
+                        provider=session.provider,
+                        model=session.model,
+                        context=session.context,
+                    )
+                )
             except Exception:
                 session.instructions = []
             if not session.instructions:

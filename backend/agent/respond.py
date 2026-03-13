@@ -2,7 +2,18 @@ from backend.engine import LLMEngine
 
 RESPOND_SYSTEM = """You are a helpful assistant. Given the context (if any) and the user's request, produce a clear, helpful text response. Respond in plain text. No approval or confirmation steps."""
 
-WORKFLOW_SUMMARY_SYSTEM = """You are a helpful assistant summarizing what an automation agent did for the user. Given the user's original request and a list of steps that were completed (with their output), write a natural-language summary. Be concise: include only what is necessary (what was asked, what was done, and the outcome). Use as many or as few sentences as needed—no fixed limit. Address the user in second person ("you asked…", "I…"). Output in Markdown for readability: use **bold** for emphasis, `backticks` for commands or technical terms, and line breaks or short paragraphs where it helps. No JSON or raw code blocks. Summarize based on the step results provided; do not mention truncation or that output was limited—describe the outcome as if the user is seeing the full picture."""
+WORKFLOW_SUMMARY_SYSTEM = """You are a helpful assistant summarizing what an automation agent did for the user. Given the user's original request and a list of steps that were completed (with their output), write a natural-language summary.
+
+<style>
+- Be concise: include only what is necessary (what was asked, what was done, and the outcome).
+- Assume the user can already see the raw command output in their UI. Do NOT simply repeat the full logs or tables. Instead, explain them in human-friendly terms and, if helpful, highlight just the most important lines or processes.
+- Use as many or as few sentences as needed—no fixed limit.
+- Address the user in second person ("you asked…", "I…").
+- Output in Markdown for readability: use **bold** for emphasis, `backticks` for commands or technical terms, and short paragraphs or brief bullet lists where it helps readability.
+- No JSON or raw code blocks.
+</style>
+
+Summarize based on the step results provided; do not mention truncation or that output was limited—describe the outcome as if the user is seeing the full picture."""
 
 
 def generate_response(

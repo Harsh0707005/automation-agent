@@ -6,9 +6,16 @@ from backend.agent.schema import Plan, PlanStep, PlanSchema
 from backend.agent.prompts import PLANNING_SYSTEM, planning_user_prompt
 
 
-def plan(user_request: str, engine: LLMEngine, provider: str, model: str | None = None, context: dict | None = None) -> Plan:
+def plan(
+    user_request: str,
+    engine: LLMEngine,
+    provider: str,
+    model: str | None = None,
+    context: dict | None = None,
+    recent_results: list[tuple[str, str]] | None = None,
+) -> Plan:
     import sys
-    full_prompt = f"{PLANNING_SYSTEM}\n\n{planning_user_prompt(user_request, context)}"
+    full_prompt = f"{PLANNING_SYSTEM}\n\n{planning_user_prompt(user_request, context, recent_results)}"
     print("[agent] LLM planning call...", flush=True)
     sys.stdout.flush()
     result = engine.complete(full_prompt, provider=provider, model=model, timeout=90)

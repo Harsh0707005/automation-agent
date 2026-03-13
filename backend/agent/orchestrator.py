@@ -34,6 +34,7 @@ def run_agent(
             engine=engine,
             provider=provider,
             model=model,
+            context=context,
         )
         display_result = mock_execute(instructions)
         step_results.append(
