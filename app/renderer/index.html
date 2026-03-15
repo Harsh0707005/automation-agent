@@ -20,6 +20,14 @@
       </div>
       <div class="sidebar-list" id="sidebar-list"></div>
       <div class="sidebar-footer">
+        <button id="knowledge-btn" class="memory-btn" title="View Knowledge Index">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M20 6L12 2L4 6V18L12 22L20 18V6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 22V10" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 6L12 10L4 6" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          Knowledge
+        </button>
         <button id="memory-btn" class="memory-btn" title="View Memory">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -29,6 +37,27 @@
       </div>
     </aside>
     <div class="main-area">
+      <div id="indexing-indicator" class="indexing-indicator" style="display:none">
+        <div class="indexing-spinner"></div>
+        <span id="indexing-indicator-text">Indexing...</span>
+        <span id="indexing-indicator-count" class="indexing-count"></span>
+      </div>
+      <div id="knowledge-panel" class="knowledge-panel" style="display:none">
+        <div class="memory-panel-header">
+          <div class="memory-panel-title">Knowledge Index</div>
+          <button id="knowledge-close-btn" class="memory-close-btn">&#x2715;</button>
+        </div>
+        <div class="knowledge-stats" id="knowledge-stats"></div>
+        <div class="knowledge-search-row">
+          <input type="text" id="knowledge-search-input" class="knowledge-search-input" placeholder="Search your files..." autocomplete="off" />
+          <select id="knowledge-search-mode" class="knowledge-search-mode">
+            <option value="hybrid">Hybrid</option>
+            <option value="semantic">Semantic</option>
+            <option value="metadata">Metadata</option>
+          </select>
+        </div>
+        <div id="knowledge-results" class="knowledge-results"></div>
+      </div>
       <div id="memory-panel" class="memory-panel" style="display:none">
         <div class="memory-panel-header">
           <div class="memory-panel-title">Memory</div>

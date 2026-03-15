@@ -53,6 +53,13 @@ const memoryPanel = document.getElementById('memory-panel');
 const memoryList = document.getElementById('memory-list');
 const memoryCloseBtn = document.getElementById('memory-close-btn');
 const memoryClearAllBtn = document.getElementById('memory-clear-all-btn');
+const knowledgeBtn = document.getElementById('knowledge-btn');
+const knowledgePanel = document.getElementById('knowledge-panel');
+const knowledgeCloseBtn = document.getElementById('knowledge-close-btn');
+const knowledgeSearchInput = document.getElementById('knowledge-search-input');
+const knowledgeSearchMode = document.getElementById('knowledge-search-mode');
+const knowledgeResults = document.getElementById('knowledge-results');
+const knowledgeStats = document.getElementById('knowledge-stats');
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
@@ -1104,6 +1111,17 @@ async function getRelevantMemory(query) {
   return scored.slice(0, 5).map((s) => s.chunk);
 }
 
+async function getRelevantKnowledge(query) {
+  if (!window.electronAPI?.knowledgeSearch) return [];
+  try {
+    const result = await window.electronAPI.knowledgeSearch(query, { mode: 'hybrid', top_k: 5 });
+    if (result?.ok && result.results?.length > 0) {
+      return result.results;
+    }
+  } catch (_) {}
+  return [];
+}
+
 /** Fire-and-forget: extract memory from an exchange and persist only non-duplicate chunks (semantic dedupe via backend). */
 function extractAndSaveMemory(userMessage, assistantResponse) {
   if (!userMessage || !assistantResponse) return;
@@ -1221,6 +1239,181 @@ function closeMemoryPanel() {
   memoryBtn?.classList.remove('active');
 }
 
+// ─── Knowledge panel ─────────────────────────────────────────────────────────
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+
+async function renderKnowledgeStats() {
+  if (!knowledgeStats) return;
+  let stats = {};
+  try {
+    const res = window.electronAPI?.knowledgeStats ? await window.electronAPI.knowledgeStats() : {};
+    if (res?.ok) stats = res;
+  } catch (_) {}
+
+  const indexed = stats.indexed_files || 0;
+  const watching = stats.watcher_active ? 'Active' : 'Inactive';
+  const status = stats.indexing_status || {};
+  const phase = status.phase || 'idle';
+  const embedded = status.files_embedded || 0;
+
+  knowledgeStats.innerHTML = `
+    <div class="knowledge-stat-card">
+      <div class="knowledge-stat-value">${indexed.toLocaleString()}</div>
+      <div class="knowledge-stat-label">Files Indexed</div>
+    </div>
+    <div class="knowledge-stat-card">
+      <div class="knowledge-stat-value">${embedded.toLocaleString()}</div>
+      <div class="knowledge-stat-label">Files Embedded</div>
+    </div>
+    <div class="knowledge-stat-card">
+      <div class="knowledge-stat-value">${phase.charAt(0).toUpperCase() + phase.slice(1)}</div>
+      <div class="knowledge-stat-label">Status</div>
+    </div>
+    <div class="knowledge-stat-card">
+      <div class="knowledge-stat-value">${watching}</div>
+      <div class="knowledge-stat-label">Watcher</div>
+    </div>
+  `;
+}
+
+async function searchKnowledge(query) {
+  if (!knowledgeResults) return;
+  if (!query.trim()) {
+    knowledgeResults.innerHTML = '<div class="knowledge-empty">Type a query to search your indexed files</div>';
+    return;
+  }
+
+  knowledgeResults.innerHTML = '<div class="knowledge-empty">Searching...</div>';
+
+  try {
+    const mode = knowledgeSearchMode?.value || 'hybrid';
+    const res = window.electronAPI?.knowledgeSearch
+      ? await window.electronAPI.knowledgeSearch(query, { mode, top_k: 20 })
+      : { ok: false };
+
+    if (!res?.ok || !res.results?.length) {
+      knowledgeResults.innerHTML = '<div class="knowledge-empty">No results found</div>';
+      return;
+    }
+
+    knowledgeResults.innerHTML = '';
+    for (const r of res.results) {
+      const item = document.createElement('div');
+      item.className = 'knowledge-result-item';
+
+      const header = document.createElement('div');
+      header.className = 'knowledge-result-header';
+
+      const name = document.createElement('span');
+      name.className = 'knowledge-result-name';
+      name.textContent = r.file_name;
+      header.appendChild(name);
+
+      if (r.extension) {
+        const ext = document.createElement('span');
+        ext.className = 'knowledge-result-ext';
+        ext.textContent = r.extension;
+        header.appendChild(ext);
+      }
+
+      const score = document.createElement('span');
+      score.className = 'knowledge-result-score';
+      score.textContent = `score: ${r.score.toFixed(3)}`;
+      header.appendChild(score);
+
+      item.appendChild(header);
+
+      const pathEl = document.createElement('div');
+      pathEl.className = 'knowledge-result-path';
+      pathEl.textContent = r.file_path;
+      item.appendChild(pathEl);
+
+      if (r.excerpt) {
+        const excerpt = document.createElement('div');
+        excerpt.className = 'knowledge-result-excerpt';
+        excerpt.textContent = r.excerpt;
+        item.appendChild(excerpt);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'knowledge-result-meta';
+      meta.innerHTML = `<span>${formatFileSize(r.size)}</span><span>${r.source}</span>`;
+      if (r.modified_at) {
+        const d = new Date(r.modified_at * 1000);
+        meta.innerHTML += `<span>${d.toLocaleDateString()}</span>`;
+      }
+      item.appendChild(meta);
+
+      knowledgeResults.appendChild(item);
+    }
+  } catch (e) {
+    knowledgeResults.innerHTML = `<div class="knowledge-empty">Error: ${e.message}</div>`;
+  }
+}
+
+let knowledgeSearchTimer = null;
+
+function openKnowledgePanel() {
+  if (!knowledgePanel) return;
+  knowledgePanel.style.display = 'flex';
+  knowledgeBtn?.classList.add('active');
+  renderKnowledgeStats();
+  if (knowledgeResults) {
+    knowledgeResults.innerHTML = '<div class="knowledge-empty">Type a query to search your indexed files</div>';
+  }
+  knowledgeSearchInput?.focus();
+}
+
+function closeKnowledgePanel() {
+  if (!knowledgePanel) return;
+  knowledgePanel.style.display = 'none';
+  knowledgeBtn?.classList.remove('active');
+}
+
+if (knowledgeCloseBtn) {
+  knowledgeCloseBtn.addEventListener('click', closeKnowledgePanel);
+}
+
+if (knowledgeBtn) {
+  knowledgeBtn.addEventListener('click', () => {
+    if (knowledgePanel?.style.display === 'none' || !knowledgePanel?.style.display) {
+      closeMemoryPanel();
+      openKnowledgePanel();
+    } else {
+      closeKnowledgePanel();
+    }
+  });
+}
+
+if (knowledgeSearchInput) {
+  knowledgeSearchInput.addEventListener('input', () => {
+    clearTimeout(knowledgeSearchTimer);
+    knowledgeSearchTimer = setTimeout(() => {
+      searchKnowledge(knowledgeSearchInput.value);
+    }, 400);
+  });
+  knowledgeSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      clearTimeout(knowledgeSearchTimer);
+      searchKnowledge(knowledgeSearchInput.value);
+    }
+  });
+}
+
+if (knowledgeSearchMode) {
+  knowledgeSearchMode.addEventListener('change', () => {
+    if (knowledgeSearchInput?.value.trim()) {
+      searchKnowledge(knowledgeSearchInput.value);
+    }
+  });
+}
+
 // ─── Model loading ────────────────────────────────────────────────────────────
 
 async function loadModels() {
@@ -1295,6 +1488,13 @@ async function send() {
       context.user_memory = relevantChunks.map((c) => c.content).join(' | ');
     }
 
+    const knowledgeResults = await getRelevantKnowledge(text);
+    if (knowledgeResults.length > 0) {
+      context.knowledge_context = knowledgeResults
+        .map((r) => `[${r.file_name}] (${r.file_path}): ${r.excerpt}`)
+        .join('\n');
+    }
+
     showTypingBubble();
     try {
       const controller = new AbortController();
@@ -1351,6 +1551,13 @@ async function send() {
   const relevantChunks = await getRelevantMemory(text);
   if (relevantChunks.length > 0) {
     context.user_memory = relevantChunks.map((c) => c.content).join(' | ');
+  }
+
+  const knowledgeResults2 = await getRelevantKnowledge(text);
+  if (knowledgeResults2.length > 0) {
+    context.knowledge_context = knowledgeResults2
+      .map((r) => `[${r.file_name}] (${r.file_path}): ${r.excerpt}`)
+      .join('\n');
   }
 
   const requestPayload = {
@@ -1519,6 +1726,38 @@ updateSendState();
 const useAgentCheckbox = document.getElementById('use-agent');
 if (useAgentCheckbox) {
   useAgentCheckbox.checked = true;
+}
+
+// ─── Indexing indicator (top-right pill, pushed from main process) ────────────
+
+const indexingIndicator = document.getElementById('indexing-indicator');
+const indexingText = document.getElementById('indexing-indicator-text');
+const indexingCount = document.getElementById('indexing-indicator-count');
+
+function updateIndexingIndicator(status) {
+  if (!indexingIndicator) return;
+  if (status.active) {
+    if (status.phase === 'scanning') {
+      indexingText.textContent = 'Scanning';
+      const processed = (status.total_processed || 0).toLocaleString();
+      indexingCount.textContent = `${processed} files`;
+    } else if (status.phase === 'embedding') {
+      indexingText.textContent = 'Embedding';
+      const done = (status.files_embedded || 0).toLocaleString();
+      const total = (status.files_to_embed || 0).toLocaleString();
+      indexingCount.textContent = `${done}/${total}`;
+    } else {
+      indexingText.textContent = 'Indexing';
+      indexingCount.textContent = '';
+    }
+    indexingIndicator.style.display = 'flex';
+  } else {
+    indexingIndicator.style.display = 'none';
+  }
+}
+
+if (window.electronAPI?.onKnowledgeProgress) {
+  window.electronAPI.onKnowledgeProgress(updateIndexingIndicator);
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

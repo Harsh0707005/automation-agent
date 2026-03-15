@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
+const readline = require('readline');
 
 const RENDERER_PATH = path.join(__dirname, '..', 'renderer');
 const PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'index.js');
@@ -108,6 +109,12 @@ function getMemoryFile() {
   return path.join(app.getPath('userData'), 'memory.json');
 }
 
+function getKnowledgeDir() {
+  const dir = path.join(app.getPath('userData'), 'knowledge');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function getSnapshotsDir() {
   const dir = path.join(app.getPath('userData'), 'snapshots');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -119,6 +126,162 @@ function readMemory() {
   if (!fs.existsSync(file)) return [];
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return []; }
 }
+
+// ─── Local Knowledge Indexer Process ─────────────────────────────────────────
+// Runs entirely on the user's machine as a child process. Never touches the backend.
+
+let indexerProcess = null;
+let indexerReady = false;
+let pendingRequests = new Map(); // id -> {resolve, reject, timeout}
+let requestIdCounter = 0;
+let lastKnowledgeStatus = { active: false, phase: 'idle' };
+
+function getIndexerPythonPath() {
+  // Use the backend venv's Python since it has all dependencies installed
+  const repoRoot = path.join(__dirname, '..', '..');
+  const venvPython = path.join(repoRoot, 'backend', 'venv', 'bin', 'python');
+  if (fs.existsSync(venvPython)) return venvPython;
+  // Fallback: try system python
+  return 'python3';
+}
+
+function startIndexerProcess() {
+  if (indexerProcess) return;
+
+  const dataDir = getKnowledgeDir();
+  const repoRoot = path.join(__dirname, '..', '..');
+  const pythonPath = getIndexerPythonPath();
+
+  console.log('[knowledge] spawning local indexer process');
+  indexerProcess = spawn(pythonPath, ['-m', 'backend.knowledge.cli', dataDir], {
+    cwd: repoRoot,
+    env: { ...process.env, PYTHONPATH: repoRoot, PYTHONUNBUFFERED: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  const rl = readline.createInterface({ input: indexerProcess.stdout });
+  rl.on('line', (line) => {
+    try {
+      const msg = JSON.parse(line);
+
+      // Progress updates are pushed without a request ID
+      if (msg.type === 'progress') {
+        lastKnowledgeStatus = { ...msg, active: msg.phase !== 'idle' && msg.phase !== 'watching' };
+        // Forward to renderer
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('knowledge-progress', lastKnowledgeStatus);
+        }
+        return;
+      }
+
+      if (msg.type === 'ready') {
+        indexerReady = true;
+        console.log('[knowledge] indexer process ready');
+        return;
+      }
+
+      // Response to a command — resolve the oldest pending request for this cmd
+      for (const [id, entry] of pendingRequests) {
+        if (entry.cmd === msg.cmd || !msg.cmd) {
+          clearTimeout(entry.timeout);
+          pendingRequests.delete(id);
+          entry.resolve(msg);
+          return;
+        }
+      }
+    } catch (_) {
+      // Non-JSON output, ignore
+    }
+  });
+
+  indexerProcess.stderr.on('data', (data) => {
+    const text = data.toString().trim();
+    if (text) console.error('[knowledge:stderr]', text);
+  });
+
+  indexerProcess.on('close', (code) => {
+    console.log('[knowledge] indexer process exited with code', code);
+    indexerProcess = null;
+    indexerReady = false;
+    // Reject all pending requests
+    for (const [id, entry] of pendingRequests) {
+      clearTimeout(entry.timeout);
+      entry.reject(new Error('Indexer process exited'));
+    }
+    pendingRequests.clear();
+  });
+
+  indexerProcess.on('error', (err) => {
+    console.error('[knowledge] failed to spawn indexer:', err.message);
+    indexerProcess = null;
+    indexerReady = false;
+  });
+}
+
+function sendToIndexer(command, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    if (!indexerProcess || !indexerReady) {
+      return reject(new Error('Indexer not ready'));
+    }
+    const id = ++requestIdCounter;
+    const timeout = setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new Error('Indexer request timed out'));
+    }, timeoutMs);
+    pendingRequests.set(id, { resolve, reject, timeout, cmd: command.cmd });
+    indexerProcess.stdin.write(JSON.stringify(command) + '\n');
+  });
+}
+
+function stopIndexerProcess() {
+  if (!indexerProcess) return;
+  try {
+    indexerProcess.stdin.write(JSON.stringify({ cmd: 'shutdown' }) + '\n');
+    // Give it 8 seconds to save FAISS + checkpoint SQLite before force-killing
+    setTimeout(() => {
+      if (indexerProcess) {
+        indexerProcess.kill();
+        indexerProcess = null;
+      }
+    }, 8000);
+  } catch (_) {
+    if (indexerProcess) indexerProcess.kill();
+    indexerProcess = null;
+  }
+}
+
+async function startKnowledgeIndexing() {
+  startIndexerProcess();
+
+  // Wait for indexer to be ready
+  let attempts = 0;
+  while (!indexerReady && attempts < 60) {
+    await new Promise((r) => setTimeout(r, 500));
+    attempts++;
+  }
+  if (!indexerReady) {
+    console.error('[knowledge] indexer did not become ready in time');
+    return;
+  }
+
+  const homeDir = os.homedir();
+  console.log('[knowledge] starting indexing for', homeDir);
+
+  try {
+    await sendToIndexer({ cmd: 'scan_async', directory: homeDir });
+  } catch (e) {
+    console.error('[knowledge] failed to start scan:', e.message);
+  }
+
+  try {
+    await sendToIndexer({ cmd: 'watch', directories: [homeDir] });
+  } catch (e) {
+    console.error('[knowledge] failed to start watcher:', e.message);
+  }
+}
+
+// ─── App Ready ───────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
   ipcMain.handle('get-device-context', getDeviceContext);
@@ -211,10 +374,8 @@ app.whenReady().then(() => {
   ipcMain.handle('restore-file-snapshot', (_, filePath, originalContent, existed) => {
     try {
       if (!existed) {
-        // File was newly created by the agent — delete it
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } else {
-        // Restore to the original content
         const dir = path.dirname(filePath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(filePath, originalContent, 'utf8');
@@ -222,6 +383,46 @@ app.whenReady().then(() => {
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
+    }
+  });
+
+  // -- Knowledge Index IPC Handlers (local subprocess, no backend) --
+
+  ipcMain.handle('knowledge-get-data-dir', () => getKnowledgeDir());
+
+  ipcMain.handle('knowledge-scan', async (_, directory) => {
+    try {
+      return await sendToIndexer({ cmd: 'scan', directory }, 300000);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-search', async (_, query, options) => {
+    try {
+      return await sendToIndexer({
+        cmd: 'search',
+        query,
+        mode: options?.mode || 'hybrid',
+        extension: options?.extension || null,
+        directory: options?.directory || null,
+        top_k: options?.top_k || 10,
+      }, 15000);
+    } catch (e) {
+      return { ok: false, error: e.message, results: [] };
+    }
+  });
+
+  ipcMain.handle('knowledge-status', async () => {
+    // Return cached status from progress events (no round-trip needed)
+    return { ok: true, ...lastKnowledgeStatus };
+  });
+
+  ipcMain.handle('knowledge-stats', async () => {
+    try {
+      return await sendToIndexer({ cmd: 'stats' }, 5000);
+    } catch (e) {
+      return { ok: false, error: e.message };
     }
   });
 
@@ -265,6 +466,17 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // Start local knowledge indexer after a short delay
+  setTimeout(() => {
+    startKnowledgeIndexing().catch((e) => {
+      console.error('[knowledge] startup indexing failed:', e.message);
+    });
+  }, 3000);
+});
+
+app.on('before-quit', () => {
+  stopIndexerProcess();
 });
 
 app.on('window-all-closed', () => {

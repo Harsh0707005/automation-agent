@@ -309,6 +309,10 @@ async def run_agent_ws(send_fn, session: AgentSession):
                     memory = (session.context or {}).get("user_memory", "")
                     if memory:
                         context_text = f"{context_text}\n\nUser memory: {memory}".strip() if context_text else f"User memory: {memory}"
+                    knowledge = (session.context or {}).get("knowledge_context", "")
+                    if knowledge:
+                        knowledge_snippet = str(knowledge)[:2000]
+                        context_text = f"{context_text}\n\nRelevant files from filesystem:\n{knowledge_snippet}".strip() if context_text else f"Relevant files from filesystem:\n{knowledge_snippet}"
                     response = await run_sync(
                         lambda: generate_response(
                             prompt_text, context_text or None, engine, session.provider, session.model

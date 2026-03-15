@@ -60,7 +60,8 @@ PLANNING_SYSTEM = """You are a planning agent for a desktop automation assistant
 6. When the user refers to "the 3rd process", "the first one", "the second one", or similar ordinal phrases, interpret them relative to the most recent relevant list in the recent agent results (e.g. the top-10 process list you just showed), unless the user clearly specifies a different source.
 7. Do NOT add separate "confirm" or "ask for approval" steps before destructive operations. The execution layer handles confirmation automatically before running any destructive command. Just plan the direct action step (e.g. "Delete ~/Desktop/hello.sh").
 8. When a specific file, directory, or resource was mentioned or created in the conversation history, ALWAYS use its exact path/name in the step description. Never use vague references like "the script" or "the file" — write the exact path (e.g. "Delete ~/Desktop/hello_world.sh", not "Delete the bash script").
-9. When the user refers to a project, file, or resource by name only and the exact path is NOT in the conversation history or device context: (a) first plan a discovery step described only as "Search for directories matching the project name using find -iname" — the executor will derive search root from device context (home_dir) and extract keywords from the objective at runtime; (b) then plan an ask_user step that presents only the most specific real matches from the find output; (c) then plan the remaining task steps that use the user's chosen answer. Do NOT end the plan after asking. Do NOT hardcode any paths in the plan description.
+9. KNOWLEDGE INDEX — the context may include "Relevant files from user's filesystem (knowledge index)" with pre-searched file matches. When this section is present and contains results that match what the user is looking for, use those file paths DIRECTLY in your plan — do NOT plan a separate discovery step with find/search commands. The knowledge index has already searched the user's entire filesystem. Only fall back to a find command if the knowledge index section is absent or has no relevant matches.
+10. When the user refers to a project, file, or resource by name only and the exact path is NOT in the conversation history, device context, OR knowledge index results: (a) first plan a discovery step described only as "Search for directories matching the project name using find -iname" — the executor will derive search root from device context (home_dir) and extract keywords from the objective at runtime; (b) then plan an ask_user step that presents only the most specific real matches from the find output; (c) then plan the remaining task steps that use the user's chosen answer. Do NOT end the plan after asking. Do NOT hardcode any paths in the plan description.
 </planning_rules>
 
 <parallelism_examples>
@@ -104,8 +105,9 @@ Do not refer to internal tool names in the "reason" field; use brief user-facing
 5. For destructive actions (e.g. `rm -rf`, deleting user data or config files, force-killing processes, modifying system-wide settings, installing/uninstalling system software), emit the run_command directly. The execution layer will automatically intercept and ask for user confirmation before running it — do NOT emit a separate request_confirmation instruction before the run_command, as that causes a redundant double-prompt.
 6. For file/directory deletion, ALWAYS use the exact path when it is known from the goal or conversation context. NEVER use shell wildcards (e.g. `*.sh`, `*`) unless the user explicitly asked to delete multiple files matching a pattern. If the goal says "delete ~/Desktop/hello_world.sh", the command must be `rm ~/Desktop/hello_world.sh`, not `rm ~/Desktop/*.sh`.
 7. When the goal is "Send text response to the user: <message>" (or similar), emit a single respond instruction with prompt set to the exact message to deliver (e.g. "Say to the user: <message>"). Use context to pass any relevant User memory or prior output so the response is grounded in it.
-7a. When the goal is a directory/file search: extract 1–2 short keywords from the overall objective, determine the search root from device context (use home_dir if available, otherwise ~), then emit a `run_command` using `find <home_dir> -type d \( -iname "*<kw1>*" -o -iname "*<kw2>*" \) 2>/dev/null | head -20`. No maxdepth — traverse as deep as needed. Do NOT hardcode any specific paths or directory names in the command. If nothing is found, recovery should try a single broader keyword or a different root, still scoped to this step only.
-7b. When the goal is to ask the user to pick or clarify something AND a prior discovery step has run: emit an `ask_user` instruction. To build smart ranked options: (1) read the real output from completed_results, (2) score each entry against keywords in the overall objective and conversation history — prefer deeper, more specific leaf matches over parent containers, (3) select the top 2–4 highest-scoring real entries. Never invent or assume paths. If no prior discovery step has run, emit a `run_command` search first.
+7a. KNOWLEDGE INDEX — the context may include "Relevant files from user's filesystem (knowledge index)" with pre-searched results. When these results contain files that match the current goal, use their exact paths directly (e.g. in a read_file, respond with context, or message instruction) — do NOT run find/search commands for files that are already found in the knowledge index. Only fall back to a `run_command` with `find` if the knowledge index has no relevant results or is absent.
+7b. When the goal is a directory/file search AND the knowledge index has no matches: extract 1–2 short keywords from the overall objective, determine the search root from device context (use home_dir if available, otherwise ~), then emit a `run_command` using `find <home_dir> -type d \( -iname "*<kw1>*" -o -iname "*<kw2>*" \) 2>/dev/null | head -20`. No maxdepth — traverse as deep as needed. Do NOT hardcode any specific paths or directory names in the command.
+7c. When the goal is to ask the user to pick or clarify something AND a prior discovery step has run: emit an `ask_user` instruction. To build smart ranked options: (1) read the real output from completed_results, (2) score each entry against keywords in the overall objective and conversation history — prefer deeper, more specific leaf matches over parent containers, (3) select the top 2–4 highest-scoring real entries. Never invent or assume paths. If no prior discovery step has run, emit a `run_command` search first.
 </execution_rules>
 
 <output_format>
@@ -123,10 +125,16 @@ def planning_user_prompt(
 ) -> str:
     base_lines: list[str] = []
     if context:
+        knowledge = context.pop("knowledge_context", None)
         base_lines.append("Device context:")
         for k, v in sorted(context.items()):
             base_lines.append(f"  {k}: {v}")
         base_lines.append("")
+        if knowledge:
+            base_lines.append("Relevant files from user's filesystem (knowledge index):")
+            base_lines.append(str(knowledge)[:3000])
+            base_lines.append("")
+            context["knowledge_context"] = knowledge
     if conversation_history:
         base_lines.append("Conversation history (oldest to newest):")
         for turn in conversation_history[-10:]:
@@ -162,10 +170,17 @@ def step_user_prompt(
 ) -> str:
     lines: list[str] = []
     if context:
+        knowledge = context.get("knowledge_context")
         lines.append("Device context:")
         for k, v in sorted(context.items()):
+            if k == "knowledge_context":
+                continue
             lines.append(f"  {k}: {v}")
         lines.append("")
+        if knowledge:
+            lines.append("Relevant files from user's filesystem (knowledge index):")
+            lines.append(str(knowledge)[:2000])
+            lines.append("")
     if conversation_history:
         lines.append("Conversation history (for context when ranking options):")
         for turn in conversation_history[-6:]:

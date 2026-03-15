@@ -23,4 +23,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSnapshots: (messageId) => ipcRenderer.invoke('get-snapshots', messageId),
   deleteSnapshots: (messageId) => ipcRenderer.invoke('delete-snapshots', messageId),
   restoreFileSnapshot: (filePath, originalContent, existed) => ipcRenderer.invoke('restore-file-snapshot', filePath, originalContent, existed),
+  // Knowledge Index (runs entirely on user's device as local subprocess)
+  knowledgeGetDataDir: () => ipcRenderer.invoke('knowledge-get-data-dir'),
+  knowledgeScan: (directory) => ipcRenderer.invoke('knowledge-scan', directory),
+  knowledgeSearch: (query, options) => ipcRenderer.invoke('knowledge-search', query, options),
+  knowledgeStats: () => ipcRenderer.invoke('knowledge-stats'),
+  knowledgeStatus: () => ipcRenderer.invoke('knowledge-status'),
+  onKnowledgeProgress: (handler) => {
+    ipcRenderer.on('knowledge-progress', (_event, status) => {
+      if (typeof handler === 'function') handler(status);
+    });
+  },
 });

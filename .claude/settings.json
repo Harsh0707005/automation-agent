@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/Users/harshmaster/Desktop/Projects/automation-agent/backend"
+    ],
+    "allow": [
+      "Bash(grep -n \"SystemExit\\\\|atexit\\\\|__del__\\\\|finally\" /Users/harshmaster/Desktop/Projects/automation-agent/backend/knowledge/*.py)"
+    ]
+  }
+}
