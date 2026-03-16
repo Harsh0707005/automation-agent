@@ -11,6 +11,7 @@ from backend.services import OpenAIService, AnthropicService, GeminiService
 from backend.agent import run_agent
 from backend.agent.planning import plan
 from backend.agent.ws_agent import AgentSession, run_agent_ws
+from backend.knowledge.service import KnowledgeIndexService
 
 
 _MAX_HISTORY_TURNS = 20
@@ -33,6 +34,17 @@ app.add_middleware(
 )
 
 engine = LLMEngine()
+
+# Knowledge service — shared across all sessions, initialized lazily to avoid
+# blocking startup. The LLM engine is passed so query rewriting works.
+_knowledge_service: KnowledgeIndexService | None = None
+
+
+def _get_knowledge_service() -> KnowledgeIndexService:
+    global _knowledge_service
+    if _knowledge_service is None:
+        _knowledge_service = KnowledgeIndexService(llm_engine=engine)
+    return _knowledge_service
 
 
 class MessageRequest(BaseModel):
@@ -87,7 +99,7 @@ def _build_prompt_with_context(message: str, context: Optional[dict[str, Any]]) 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
-    session = AgentSession(engine=engine)
+    session = AgentSession(engine=engine, knowledge_service=_get_knowledge_service())
 
     agent_task: asyncio.Task | None = None
     # Flag to indicate the current workflow has been cancelled from the client.
@@ -168,6 +180,10 @@ async def ws_endpoint(websocket: WebSocket):
                 session.provider = provider
                 session.model = model
                 session.context = context
+
+                # Sync user-configured allowed search dirs into the knowledge service
+                if context and context.get("allowed_search_dirs") and session.knowledge_service:
+                    session.knowledge_service.set_search_dirs(context["allowed_search_dirs"])
 
                 # Run planning + execution in the background so we can immediately handle
                 # stop/confirmation/command_result messages while the LLM is working.
@@ -410,4 +426,100 @@ def post_title(req: MessageRequest) -> TitleResponse:
         return TitleResponse(ok=True, title=title)
     except Exception as e:
         return TitleResponse(ok=False, error=str(e))
+
+
+# ── Knowledge index endpoints ────────────────────────────────────────────────
+
+
+class KnowledgeScanRequest(BaseModel):
+    directory: str
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str
+    directories: Optional[list[str]] = None
+    extensions: Optional[list[str]] = None
+    recency_days: Optional[float] = None
+    top_k: int = 10
+
+
+class KnowledgeSetDirsRequest(BaseModel):
+    directories: list[str]
+
+
+@app.post("/knowledge/scan")
+def post_knowledge_scan(req: KnowledgeScanRequest):
+    if not req.directory:
+        return {"ok": False, "error": "directory required"}
+    try:
+        svc = _get_knowledge_service()
+        count = svc.scan_directory(req.directory)
+        return {"ok": True, "indexed_files": count}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/knowledge/search")
+def post_knowledge_search(req: KnowledgeSearchRequest):
+    if not req.query:
+        return {"ok": False, "error": "query required"}
+    try:
+        svc = _get_knowledge_service()
+        results = svc.layered_search(
+            req.query,
+            directories=req.directories,
+            extensions=req.extensions,
+            recency_days=req.recency_days,
+            top_k=req.top_k,
+        )
+        return {
+            "ok": True,
+            "results": [
+                {
+                    "file_path": r.file_path,
+                    "file_name": r.file_name,
+                    "extension": r.extension,
+                    "size": r.size,
+                    "modified_at": r.modified_at,
+                    "directory": r.directory,
+                    "excerpt": r.excerpt,
+                    "score": r.score,
+                    "normalized_score": r.normalized_score,
+                    "source": r.source,
+                }
+                for r in results
+            ],
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/knowledge/set-search-dirs")
+def post_knowledge_set_dirs(req: KnowledgeSetDirsRequest):
+    if not req.directories:
+        return {"ok": False, "error": "directories required"}
+    try:
+        svc = _get_knowledge_service()
+        svc.set_search_dirs(req.directories)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/status")
+def get_knowledge_status():
+    try:
+        svc = _get_knowledge_service()
+        return {"ok": True, **svc.get_status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/stats")
+def get_knowledge_stats():
+    try:
+        svc = _get_knowledge_service()
+        return {"ok": True, **svc.get_stats()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 

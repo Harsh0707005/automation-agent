@@ -149,6 +149,37 @@ function setKnowledgeRootDir(rootDir) {
   writeKnowledgeConfig({ ...cfg, rootDir });
 }
 
+// ─── Allowed Search Directories ──────────────────────────────────────────────
+// Persisted list of directories the agent is allowed to search/access.
+// Stored in knowledge/config.json under "allowedDirs".
+
+function getAllowedDirs() {
+  const cfg = readKnowledgeConfig();
+  return Array.isArray(cfg.allowedDirs) ? cfg.allowedDirs : [];
+}
+
+function setAllowedDirs(dirs) {
+  const cfg = readKnowledgeConfig();
+  writeKnowledgeConfig({ ...cfg, allowedDirs: dirs });
+}
+
+function addAllowedDir(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const dirs = getAllowedDirs();
+  if (!dirs.includes(resolved) && fs.existsSync(resolved)) {
+    dirs.push(resolved);
+    setAllowedDirs(dirs);
+  }
+  return dirs;
+}
+
+function removeAllowedDir(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const dirs = getAllowedDirs().filter((d) => d !== resolved);
+  setAllowedDirs(dirs);
+  return dirs;
+}
+
 function getSnapshotsDir() {
   const dir = path.join(app.getPath('userData'), 'snapshots');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -510,6 +541,37 @@ app.whenReady().then(() => {
     } catch (e) {
       return { ok: false, error: e.message };
     }
+  });
+
+  // ─── Allowed Search Directories IPC ──────────────────────────────────────
+
+  ipcMain.handle('knowledge-get-allowed-dirs', () => {
+    return { ok: true, dirs: getAllowedDirs() };
+  });
+
+  ipcMain.handle('knowledge-add-allowed-dir', async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Add directory to agent search scope',
+        properties: ['openDirectory', 'multiSelections'],
+      });
+      if (result.canceled || !result.filePaths?.length) {
+        return { ok: false, canceled: true };
+      }
+      let dirs = getAllowedDirs();
+      for (const p of result.filePaths) {
+        dirs = addAllowedDir(p);
+      }
+      return { ok: true, dirs };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-remove-allowed-dir', (_, dirPath) => {
+    const dirs = removeAllowedDir(dirPath);
+    return { ok: true, dirs };
   });
 
   ipcMain.handle('run-interactive-command', async (event, command, cmdId) => {

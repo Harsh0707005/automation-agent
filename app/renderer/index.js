@@ -63,6 +63,8 @@ const knowledgeStats = document.getElementById('knowledge-stats');
 const knowledgeClearBtn = document.getElementById('knowledge-clear-btn');
 const knowledgeRootBtn = document.getElementById('knowledge-root-btn');
 const knowledgeRootLabel = document.getElementById('knowledge-root-label');
+const knowledgeAllowedList = document.getElementById('knowledge-allowed-list');
+const knowledgeAddDirBtn = document.getElementById('knowledge-add-dir-btn');
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
@@ -1376,6 +1378,7 @@ function openKnowledgePanel() {
   knowledgePanel.style.display = 'flex';
   knowledgeBtn?.classList.add('active');
   renderKnowledgeStats();
+  renderAllowedDirs();
   if (knowledgeResults) {
     knowledgeResults.innerHTML = '<div class="knowledge-empty">Type a query to search your indexed files</div>';
   }
@@ -1465,6 +1468,60 @@ if (knowledgeRootBtn) {
   });
 }
 
+// ─── Allowed Search Directories UI ───────────────────────────────────────────
+
+async function renderAllowedDirs() {
+  if (!knowledgeAllowedList || !window.electronAPI?.knowledgeGetAllowedDirs) return;
+  try {
+    const res = await window.electronAPI.knowledgeGetAllowedDirs();
+    const dirs = res?.ok ? res.dirs : [];
+    if (!dirs.length) {
+      knowledgeAllowedList.innerHTML = '<div class="knowledge-allowed-empty">No directories configured — agent will auto-discover from home folder</div>';
+      return;
+    }
+    knowledgeAllowedList.innerHTML = '';
+    for (const d of dirs) {
+      const item = document.createElement('div');
+      item.className = 'knowledge-allowed-item';
+
+      const pathEl = document.createElement('span');
+      pathEl.className = 'knowledge-allowed-item-path';
+      pathEl.textContent = d;
+      pathEl.title = d;
+      item.appendChild(pathEl);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'knowledge-allowed-remove-btn';
+      removeBtn.innerHTML = '&#x2715;';
+      removeBtn.title = 'Remove directory';
+      removeBtn.addEventListener('click', async () => {
+        await window.electronAPI.knowledgeRemoveAllowedDir(d);
+        renderAllowedDirs();
+      });
+      item.appendChild(removeBtn);
+
+      knowledgeAllowedList.appendChild(item);
+    }
+  } catch (_) {
+    knowledgeAllowedList.innerHTML = '<div class="knowledge-allowed-empty">Failed to load directories</div>';
+  }
+}
+
+if (knowledgeAddDirBtn) {
+  knowledgeAddDirBtn.addEventListener('click', async () => {
+    if (!window.electronAPI?.knowledgeAddAllowedDir) return;
+    knowledgeAddDirBtn.disabled = true;
+    try {
+      const res = await window.electronAPI.knowledgeAddAllowedDir();
+      if (res?.ok) {
+        renderAllowedDirs();
+      }
+    } finally {
+      knowledgeAddDirBtn.disabled = false;
+    }
+  });
+}
+
 // ─── Model loading ────────────────────────────────────────────────────────────
 
 async function loadModels() {
@@ -1546,6 +1603,11 @@ async function send() {
         .join('\n');
     }
 
+    try {
+      const adRes = await window.electronAPI?.knowledgeGetAllowedDirs();
+      if (adRes?.ok && adRes.dirs?.length) context.allowed_search_dirs = adRes.dirs;
+    } catch (_) {}
+
     showTypingBubble();
     try {
       const controller = new AbortController();
@@ -1610,6 +1672,11 @@ async function send() {
       .map((r) => `[${r.file_name}] (${r.file_path}): ${r.excerpt}`)
       .join('\n');
   }
+
+  try {
+    const adRes = await window.electronAPI?.knowledgeGetAllowedDirs();
+    if (adRes?.ok && adRes.dirs?.length) context.allowed_search_dirs = adRes.dirs;
+  } catch (_) {}
 
   const requestPayload = {
     id: nextQueueId++,

@@ -11,20 +11,57 @@ from backend.knowledge.metadata_store import FileRecord, MetadataStore
 logger = logging.getLogger(__name__)
 
 DEFAULT_SKIP_DIRS = {
-    ".git", ".svn", ".hg", "__pycache__", "node_modules", ".venv", "venv",
-    ".idea", ".vscode", ".DS_Store", "dist", "build", ".tox", ".mypy_cache",
-    ".pytest_cache", "egg-info", ".Trash", ".cache", "Library", ".npm",
-    ".cargo", ".rustup", ".local", ".gradle",
+    # Version control
+    ".git", ".svn", ".hg",
+    # Python
+    "__pycache__", ".venv", "venv", "env", ".env", "site-packages",
+    ".tox", ".mypy_cache", ".pytest_cache", "egg-info", ".eggs",
+    ".ruff_cache", ".pytype", ".nox",
+    # Node / JS
+    "node_modules", ".npm", ".yarn", ".pnp", "bower_components",
+    # IDE / editor
+    ".idea", ".vscode", ".vs", ".eclipse",
+    # Build outputs
+    "dist", "build", "out", "target", "_build", "cmake-build-debug",
+    # macOS system
+    ".DS_Store", ".Trash", ".Spotlight-V100", ".fseventsd",
+    ".TemporaryItems", "Caches", "Library",
+    # Windows system
+    "AppData", "System", "$Recycle.Bin", "System Volume Information",
+    "Recovery", "ProgramData",
+    # Linux system
+    ".local", "snap",
+    # Language-specific caches
+    ".cargo", ".rustup", ".gradle", ".m2", ".ivy2",
+    ".pub-cache", ".dartServer", ".flutter",
+    # Misc caches / containers
+    ".cache", ".tmp", "tmp", ".temp", "temp",
+    ".docker", ".vagrant", ".terraform",
+    "coverage", ".coverage", "htmlcov", ".nyc_output",
+    "logs", "log",
 }
 
+MAX_RECURSION_DEPTH = 6
+
 DEFAULT_SKIP_EXTENSIONS = {
-    ".pyc", ".pyo", ".o", ".so", ".dylib", ".dll", ".exe", ".bin",
-    ".iso", ".dmg", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+    # Compiled / binary
+    ".pyc", ".pyo", ".o", ".so", ".dylib", ".dll", ".exe", ".bin", ".obj", ".a",
+    # Archives
+    ".iso", ".dmg", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".zst",
+    # Java / JVM
     ".jar", ".war", ".class", ".whl", ".egg",
-    ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".flac", ".wav",
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg", ".webp",
+    # Media — audio
+    ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".flac", ".wav", ".aac", ".ogg", ".wma",
+    # Media — image
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg", ".webp", ".tiff", ".raw",
+    # Fonts
     ".ttf", ".otf", ".woff", ".woff2", ".eot",
-    ".db", ".sqlite", ".sqlite3",
+    # Databases
+    ".db", ".sqlite", ".sqlite3", ".mdb",
+    # Lock files / generated
+    ".lock", ".faiss",
+    # Source maps / minified
+    ".map", ".min.js", ".min.css",
 }
 
 
@@ -58,10 +95,12 @@ class FilesystemScanner:
         store: MetadataStore,
         skip_dirs: set[str] | None = None,
         skip_extensions: set[str] | None = None,
+        max_depth: int = MAX_RECURSION_DEPTH,
     ):
         self.store = store
         self.skip_dirs = skip_dirs if skip_dirs is not None else DEFAULT_SKIP_DIRS
         self.skip_extensions = skip_extensions if skip_extensions is not None else DEFAULT_SKIP_EXTENSIONS
+        self._max_depth = max_depth
         self.progress = ScanProgress()
         self._on_progress: Optional[Callable[[ScanProgress], None]] = None
         self._cancelled = False
@@ -170,7 +209,9 @@ class FilesystemScanner:
                 changed.append(fp)
         return changed
 
-    def _walk(self, root: Path):
+    def _walk(self, root: Path, depth: int = 0):
+        if depth > self._max_depth:
+            return
         try:
             for entry in sorted(root.iterdir()):
                 if self._cancelled:
@@ -178,7 +219,7 @@ class FilesystemScanner:
                 if entry.is_dir():
                     if entry.name in self.skip_dirs or entry.name.startswith("."):
                         continue
-                    yield from self._walk(entry)
+                    yield from self._walk(entry, depth + 1)
                 elif entry.is_file():
                     if entry.suffix.lower() in self.skip_extensions:
                         continue

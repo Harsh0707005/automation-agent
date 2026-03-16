@@ -2,6 +2,7 @@ import asyncio
 import shlex
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Any
 
 from backend.engine import LLMEngine
 from backend.agent.step_executor import get_instructions, get_instructions_fallback
@@ -25,6 +26,7 @@ class AgentSession:
     model: str | None = None
     context: dict | None = None
     engine: LLMEngine | None = None
+    knowledge_service: Any = None  # KnowledgeIndexService instance (optional)
     # Legacy sequential-executor fields (kept for compat, not used by parallel executor)
     step_index: int = 0
     instruction_index: int = 0
@@ -386,6 +388,84 @@ async def run_agent_ws(send_fn, session: AgentSession):
                 if inst.tool == "message":
                     msg_text = args.get("message", "") or args.get("prompt", "") or ""
                     if msg_text:
+                        await send_fn({"type": "step_message", "message": msg_text})
+                    inst_idx += 1
+                    continue
+
+                # ── search_files ──────────────────────────────────────────────
+                if inst.tool == "search_files":
+                    query = args.get("query", "")
+                    if query and session.knowledge_service is not None:
+                        search_kwargs = {"query": query, "top_k": args.get("top_k") or 10}
+                        if args.get("directories"):
+                            search_kwargs["directories"] = args["directories"]
+                        elif (session.context or {}).get("allowed_search_dirs"):
+                            search_kwargs["directories"] = session.context["allowed_search_dirs"]
+                        if args.get("extensions"):
+                            search_kwargs["extensions"] = args["extensions"]
+                        if args.get("recency_days") is not None:
+                            search_kwargs["recency_days"] = args["recency_days"]
+
+                        # Stream search progress to the user in real-time
+                        import queue as _queue
+                        progress_q: _queue.Queue = _queue.Queue()
+
+                        def _on_search_progress(msg: str):
+                            progress_q.put(msg)
+
+                        search_kwargs["on_progress"] = _on_search_progress
+
+                        # Run search in thread, drain progress messages concurrently
+                        search_future = loop.run_in_executor(
+                            None,
+                            lambda: session.knowledge_service.layered_search(**search_kwargs),
+                        )
+
+                        # Poll progress queue while search runs
+                        results = None
+                        while results is None:
+                            done = search_future.done()
+                            while not progress_q.empty():
+                                try:
+                                    pmsg = progress_q.get_nowait()
+                                    await send_fn({"type": "step_message", "message": f"🔍 {pmsg}"})
+                                except _queue.Empty:
+                                    break
+                            if done:
+                                try:
+                                    results = search_future.result()
+                                except Exception as e:
+                                    results = []
+                                    await send_fn({"type": "step_message", "message": f"File search error: {e}"})
+                                break
+                            await asyncio.sleep(0.15)
+
+                        # Drain any remaining progress messages
+                        while not progress_q.empty():
+                            try:
+                                pmsg = progress_q.get_nowait()
+                                await send_fn({"type": "step_message", "message": f"🔍 {pmsg}"})
+                            except _queue.Empty:
+                                break
+
+                        if results:
+                            result_lines = []
+                            for r in results:
+                                line = f"  {r.file_path} (score={r.score:.2f}, source={r.source})"
+                                if r.excerpt:
+                                    line += f"\n    excerpt: {r.excerpt[:150]}"
+                                result_lines.append(line)
+                            result_text = f"Search for '{query}' found {len(results)} results:\n" + "\n".join(result_lines)
+                        else:
+                            result_text = f"Search for '{query}' found no results."
+
+                        async with results_lock:
+                            session.completed_results.append((step.id, result_text))
+                        await send_fn({"type": "step_message", "message": result_text})
+                    elif not session.knowledge_service:
+                        msg_text = "File search is not available (knowledge index not initialized)."
+                        async with results_lock:
+                            session.completed_results.append((step.id, msg_text))
                         await send_fn({"type": "step_message", "message": msg_text})
                     inst_idx += 1
                     continue

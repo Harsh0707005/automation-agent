@@ -7,9 +7,11 @@ from typing import Callable, Optional
 from backend.knowledge.chunker import chunk_text
 from backend.knowledge.content_extractor import can_extract, extract_text, is_too_large_for_embedding
 from backend.knowledge.embedding_indexer import EmbeddingIndexer
+from backend.knowledge.layered_search import LayeredRetrieval
 from backend.knowledge.metadata_store import FileRecord, MetadataStore
 from backend.knowledge.retrieval import RetrievalEngine, SearchResult
 from backend.knowledge.scanner import FilesystemScanner, ScanProgress
+from backend.knowledge.scope import get_default_search_dirs, validate_search_dirs
 from backend.knowledge.watcher import FilesystemWatcher
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,14 @@ class KnowledgeIndexService:
             rewrite_provider=rewrite_provider,
             rewrite_model=rewrite_model,
         )
+        self._layered = LayeredRetrieval(
+            self._meta_store,
+            self._retrieval,
+            llm_engine=llm_engine,
+            rewrite_provider=rewrite_provider,
+            rewrite_model=rewrite_model,
+        )
+        self._search_dirs: list[str] = get_default_search_dirs()
         self._watcher: Optional[FilesystemWatcher] = None
         self._watched_dirs: list[str] = []
         self._scan_lock = threading.Lock()
@@ -143,6 +153,10 @@ class KnowledgeIndexService:
             self._watcher = None
             self._watched_dirs.clear()
 
+    def set_search_dirs(self, directories: list[str]) -> None:
+        """Override the default search directories (validated, root rejected)."""
+        self._search_dirs = validate_search_dirs(directories) or get_default_search_dirs()
+
     def search(
         self,
         query: str,
@@ -152,6 +166,7 @@ class KnowledgeIndexService:
         directory: Optional[str] = None,
         top_k: int = 10,
     ) -> list[SearchResult]:
+        """Direct search — skips the layered strategy."""
         if mode == "metadata":
             return self._retrieval.search_metadata(
                 name_pattern=query, extension=extension, directory=directory, limit=top_k
@@ -162,6 +177,32 @@ class KnowledgeIndexService:
             return self._retrieval.search_hybrid(
                 query, extension=extension, directory=directory, top_k=top_k
             )
+
+    def layered_search(
+        self,
+        query: str,
+        *,
+        directories: Optional[list[str]] = None,
+        extensions: Optional[list[str]] = None,
+        recency_days: Optional[float] = None,
+        top_k: int = 10,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> list[SearchResult]:
+        """Full layered search: fuzzy → heuristic → grep → semantic.
+
+        Uses configured search_dirs as default scope when directories is None.
+        The LLM is never allowed to invoke an unscoped search against the full
+        filesystem — scope is always restricted to user-configured directories.
+        """
+        effective_dirs = validate_search_dirs(directories) if directories else self._search_dirs
+        return self._layered.search(
+            query,
+            directories=effective_dirs or None,
+            extensions=extensions,
+            recency_days=recency_days,
+            top_k=top_k,
+            on_progress=on_progress,
+        )
 
     def get_status(self) -> dict:
         return self._status.to_dict()

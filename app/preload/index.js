@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   knowledgeStatus: () => ipcRenderer.invoke('knowledge-status'),
   knowledgeClearAll: () => ipcRenderer.invoke('knowledge-clear-all'),
   knowledgePickRoot: () => ipcRenderer.invoke('knowledge-pick-root'),
+  // Allowed search directories
+  knowledgeGetAllowedDirs: () => ipcRenderer.invoke('knowledge-get-allowed-dirs'),
+  knowledgeAddAllowedDir: () => ipcRenderer.invoke('knowledge-add-allowed-dir'),
+  knowledgeRemoveAllowedDir: (dirPath) => ipcRenderer.invoke('knowledge-remove-allowed-dir', dirPath),
   onKnowledgeProgress: (handler) => {
     ipcRenderer.on('knowledge-progress', (_event, status) => {
       if (typeof handler === 'function') handler(status);

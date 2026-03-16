@@ -44,6 +44,16 @@ def get_instructions(
             args["question"] = i.args.question
         if i.args.options is not None:
             args["options"] = i.args.options
+        if i.args.query is not None:
+            args["query"] = i.args.query
+        if i.args.directories is not None:
+            args["directories"] = i.args.directories
+        if i.args.extensions is not None:
+            args["extensions"] = i.args.extensions
+        if i.args.recency_days is not None:
+            args["recency_days"] = i.args.recency_days
+        if i.args.top_k is not None:
+            args["top_k"] = i.args.top_k
         out.append(Instruction(tool=i.tool.value, args=args, reason=i.reason))
     return out
 

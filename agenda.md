@@ -86,6 +86,26 @@ The extracted memory is structured into small independent chunks so that it can 
 
 The memory extraction logic should remain conservative. The system should prefer storing fewer high quality memory items rather than aggressively storing large amounts of low value information. This approach reduces noise and ensures that the memory layer remains useful and reliable for future reasoning.
 
+Search Strategy
+
+Here's the updated section in plain text, ready to drop into your document:
+Filesystem Knowledge Index and Retrieval System
+Search Scope Management
+The agent must never perform searches starting from the root directory of the filesystem. Searching from root causes the agent to traverse system directories, application internals, package caches, and other irrelevant locations, resulting in slow and noisy results.
+On first launch, the system prompts the user to select their working directories. If the user does not configure this explicitly, the system defaults to a sensible set of locations that covers the majority of user-relevant files. These typically include the Documents, Desktop, Downloads, and Projects directories within the user's home folder.
+A hardcoded skip list is applied during all scans and searches regardless of the configured scope. This list includes directories such as node_modules, .git, pycache, venv, site-packages, build, dist, AppData, Library, and System. File extensions associated with binary formats, media, and compiled outputs are also excluded from content search. These restrictions are non-negotiable and cannot be overridden by the LLM or the user during a search operation.
+A maximum recursion depth is enforced during all directory traversal operations. The system does not recurse beyond a fixed number of levels from the search root. Most user files are found within three to four directory levels. Going deeper almost always leads to application internals rather than user content.
+Structured Search Tool Interface
+The search tool exposed to the LLM must require the model to specify scope explicitly rather than accepting only a query string. The tool signature includes the query, an optional list of directories to search within, an optional list of file extensions to filter by, and an optional recency window expressed in days. The LLM is not permitted to invoke an unscoped search against the full filesystem.
+Pre-Search Planning Step
+Before any file search is executed, the agent performs a lightweight planning step. The LLM is asked to reason about where the requested file most likely lives based on the query and any available context. This reasoning step produces a scoped search plan including the target directories and file type filters before any filesystem operation begins. This costs a single LLM call but eliminates broad scans and substantially reduces search time.
+Layered Retrieval Strategy
+The retrieval system applies methods in order from cheapest and most precise to most expensive and approximate. The system escalates to the next layer only when the current layer produces no useful results.
+The first layer is fuzzy filename matching. The query is matched against all indexed filenames using fuzzy string matching. This resolves the majority of named document queries in milliseconds without touching file contents or the vector index.
+The second layer applies file type and directory heuristics. The full file path is treated as a semantic signal. A file located in a directory named Resumes carries different meaning than the same file in Downloads. Extension and parent folder context is used to narrow the candidate pool before deeper search is performed.
+The third layer is literal content search using fast grep across the narrowed candidate set. If the user's query contains specific names, company names, or other identifiable strings, these are searched directly against file contents. Exact string matches are more reliable than semantic matches when they are possible and should always be preferred.
+The fourth and final layer is query rewriting combined with vector search and cross-encoder reranking. This layer is reached only when all previous layers have failed to return useful results. It handles genuinely vague or descriptive queries that cannot be resolved through structural or literal means.
+
 Filesystem Knowledge Index and Retrieval System
 
 To enable the desktop automation agent to operate intelligently within the user's environment, the system includes a local filesystem knowledge index. This component allows the agent to discover, search, and retrieve files across the user's machine in a structured and scalable way. The purpose of this feature is to give the agent awareness of the user's local files so it can locate relevant resources, reference existing documents, and use file contents when reasoning about tasks.

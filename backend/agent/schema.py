@@ -12,6 +12,7 @@ class ToolType(str, Enum):
     MESSAGE = "message"
     RESPOND = "respond"
     ASK_USER = "ask_user"
+    SEARCH_FILES = "search_files"
 
 
 class PlanStepSchema(BaseModel):
@@ -33,6 +34,12 @@ class InstructionArgs(BaseModel):
     context: str | None = None
     question: str | None = None
     options: list[str] | None = None
+    # search_files args
+    query: str | None = None
+    directories: list[str] | None = None
+    extensions: list[str] | None = None
+    recency_days: float | None = None
+    top_k: int | None = None
 
 
 class InstructionSchema(BaseModel):

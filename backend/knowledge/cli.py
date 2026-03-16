@@ -6,6 +6,8 @@ Communicates via JSON over stdin/stdout — one JSON object per line.
 Commands (sent as JSON on stdin):
   {"cmd": "scan", "directory": "/path/to/dir"}
   {"cmd": "search", "query": "...", "mode": "hybrid", "top_k": 10}
+  {"cmd": "layered_search", "query": "...", "directories": [...], "extensions": [...], "recency_days": 30, "top_k": 10}
+  {"cmd": "set_search_dirs", "directories": ["/path1", "/path2"]}
   {"cmd": "status"}
   {"cmd": "watch", "directories": ["/path1", "/path2"]}
   {"cmd": "stop_watch"}
@@ -47,6 +49,24 @@ def _send(obj: dict) -> None:
     with _stdout_lock:
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
+
+
+def _format_results(results) -> list[dict]:
+    return [
+        {
+            "file_path": r.file_path,
+            "file_name": r.file_name,
+            "extension": r.extension,
+            "size": r.size,
+            "modified_at": r.modified_at,
+            "directory": r.directory,
+            "excerpt": r.excerpt,
+            "score": r.score,
+            "normalized_score": r.normalized_score,
+            "source": r.source,
+        }
+        for r in results
+    ]
 
 
 def main():
@@ -112,22 +132,34 @@ def main():
                 _send({
                     "ok": True,
                     "cmd": "search",
-                    "results": [
-                        {
-                            "file_path": r.file_path,
-                            "file_name": r.file_name,
-                            "extension": r.extension,
-                            "size": r.size,
-                            "modified_at": r.modified_at,
-                            "directory": r.directory,
-                            "excerpt": r.excerpt,
-                            "score": r.score,
-                            "normalized_score": r.normalized_score,
-                            "source": r.source,
-                        }
-                        for r in results
-                    ],
+                    "results": _format_results(results),
                 })
+
+            elif cmd == "layered_search":
+                query = req.get("query", "")
+                if not query:
+                    _send({"ok": False, "cmd": cmd, "error": "query required"})
+                    continue
+                results = svc.layered_search(
+                    query,
+                    directories=req.get("directories"),
+                    extensions=req.get("extensions"),
+                    recency_days=req.get("recency_days"),
+                    top_k=req.get("top_k", 10),
+                )
+                _send({
+                    "ok": True,
+                    "cmd": "layered_search",
+                    "results": _format_results(results),
+                })
+
+            elif cmd == "set_search_dirs":
+                dirs = req.get("directories", [])
+                if not dirs:
+                    _send({"ok": False, "cmd": cmd, "error": "directories required"})
+                    continue
+                svc.set_search_dirs(dirs)
+                _send({"ok": True, "cmd": "set_search_dirs"})
 
             elif cmd == "status":
                 _send({"ok": True, "cmd": "status", **svc.get_status()})
