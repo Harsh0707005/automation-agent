@@ -50,7 +50,13 @@ class IndexingStatus:
 class KnowledgeIndexService:
     """Orchestrates scanning, indexing, watching, and retrieval."""
 
-    def __init__(self, data_dir: str | Path | None = None):
+    def __init__(
+        self,
+        data_dir: str | Path | None = None,
+        llm_engine=None,
+        rewrite_provider: str = "openai",
+        rewrite_model: str | None = None,
+    ):
         self._data_dir = Path(data_dir or DEFAULT_DATA_DIR)
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +65,13 @@ class KnowledgeIndexService:
             self._data_dir / "embeddings", dimension=384
         )
         self._scanner = FilesystemScanner(self._meta_store)
-        self._retrieval = RetrievalEngine(self._meta_store, self._embedding_indexer)
+        self._retrieval = RetrievalEngine(
+            self._meta_store,
+            self._embedding_indexer,
+            llm_engine=llm_engine,
+            rewrite_provider=rewrite_provider,
+            rewrite_model=rewrite_model,
+        )
         self._watcher: Optional[FilesystemWatcher] = None
         self._watched_dirs: list[str] = []
         self._scan_lock = threading.Lock()
@@ -196,12 +208,17 @@ class KnowledgeIndexService:
         batch_texts_count = 0
 
         for rec in embeddable:
+            # Content-hash skip: avoid re-embedding if the file content is identical
             if self._embedding_indexer.file_is_indexed(rec.file_path):
-                existing = self._meta_store.get(rec.file_path)
-                if existing and existing.indexed_at and existing.indexed_at >= rec.modified_at:
+                current_hash = MetadataStore.compute_content_hash(rec.file_path)
+                if current_hash and rec.content_hash == current_hash:
                     self._status.files_embedded += 1
                     self._emit_status()
                     continue
+                # Hash changed — update it in metadata before re-embedding
+                if current_hash:
+                    rec.content_hash = current_hash
+                    self._meta_store.upsert(rec)
 
             file_chunks = self._extract_chunks(rec.file_path)
             if file_chunks:
@@ -233,10 +250,26 @@ class KnowledgeIndexService:
 
     def _flush_embed_batch(self, batch: list[tuple[str, list[tuple[int, str]]]]) -> int:
         count = 0
+        now = time.time()
         for file_path, chunks in batch:
             self._embedding_indexer.add_chunks(file_path, chunks)
+            # Stamp content hash and indexed_at so future runs can skip unchanged files
+            rec = self._meta_store.get(file_path)
+            if rec:
+                rec.content_hash = MetadataStore.compute_content_hash(file_path)
+                rec.indexed_at = now
+                self._meta_store.upsert(rec)
             count += 1
         return count
+
+    @staticmethod
+    def _build_chunk_header(file_path: str) -> str:
+        """Build a metadata header to prepend to each chunk so filenames and
+        file types are visible in the embedding space."""
+        p = Path(file_path)
+        stem = p.stem.replace("_", " ").replace("-", " ")
+        ext = p.suffix.lstrip(".")
+        return f"File: {stem}\nType: {ext}\n\n"
 
     def _extract_chunks(self, file_path: str) -> list[tuple[int, str]] | None:
         if is_too_large_for_embedding(file_path):
@@ -249,7 +282,8 @@ class KnowledgeIndexService:
         chunks = chunk_text(text)
         if not chunks:
             return None
-        return [(c.chunk_index, c.text) for c in chunks]
+        header = self._build_chunk_header(file_path)
+        return [(c.chunk_index, header + c.text) for c in chunks]
 
     def _handle_file_created(self, file_path: str) -> None:
         p = Path(file_path)

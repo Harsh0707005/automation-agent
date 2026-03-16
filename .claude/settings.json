@@ -1,10 +1,13 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(grep -n \"SystemExit\\\\|atexit\\\\|__del__\\\\|finally\" /Users/harshmaster/Desktop/Projects/automation-agent/backend/knowledge/*.py)",
+      "Bash(ls -1 /Users/harshmaster/Desktop/Projects/automation-agent/backend/knowledge/*.py)",
+      "Bash(wc -l /Users/harshmaster/Desktop/Projects/automation-agent/backend/knowledge/*.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''backend/knowledge/retrieval.py''\\).read\\(\\)\\); ast.parse\\(open\\(''backend/knowledge/service.py''\\).read\\(\\)\\); ast.parse\\(open\\(''backend/knowledge/cli.py''\\).read\\(\\)\\); print\\(''All files parse OK''\\)\")"
+    ],
     "additionalDirectories": [
       "/Users/harshmaster/Desktop/Projects/automation-agent/backend"
-    ],
-    "allow": [
-      "Bash(grep -n \"SystemExit\\\\|atexit\\\\|__del__\\\\|finally\" /Users/harshmaster/Desktop/Projects/automation-agent/backend/knowledge/*.py)"
     ]
   }
 }

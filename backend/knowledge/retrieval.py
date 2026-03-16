@@ -1,9 +1,12 @@
+import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from backend.knowledge.embedding_indexer import EmbeddingIndexer
 from backend.knowledge.metadata_store import MetadataStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,13 +21,115 @@ class SearchResult:
     score: float
     source: str  # "metadata", "semantic", or "hybrid"
 
+    @property
+    def normalized_score(self) -> float:
+        """Map raw score to a 0-1 display range.
+
+        - Semantic (inner-product on normalized vecs): [-1, 1] → [0, 1]
+        - Cross-encoder / hybrid scores can exceed 1, so we clamp.
+        - Metadata results always return 1.0.
+        """
+        if self.source == "metadata":
+            return 1.0
+        mapped = (self.score + 1.0) / 2.0
+        return max(0.0, min(1.0, mapped))
+
+
+class QueryRewriter:
+    """Rewrites natural language queries into keyword-focused variants using an
+    LLM, so that vague descriptions like 'girl who worked at microsoft' produce
+    search variants that actually match document text."""
+
+    REWRITE_PROMPT = (
+        "Convert this search query into 2-3 short keyword-focused variants "
+        "that would match a resume, document, or filename. "
+        'Query: "{query}"\n'
+        "Return only the variants, one per line, no numbering or explanation."
+    )
+
+    def __init__(self, llm_engine=None, provider: str = "openai", model: str | None = None):
+        self._llm = llm_engine
+        self._provider = provider
+        self._model = model
+
+    def rewrite(self, query: str) -> list[str]:
+        """Return the original query plus LLM-generated variants."""
+        if self._llm is None:
+            return [query]
+        try:
+            prompt = self.REWRITE_PROMPT.format(query=query)
+            result = self._llm.complete(prompt, provider=self._provider, model=self._model)
+            variants = [
+                line.strip()
+                for line in result.content.strip().splitlines()
+                if line.strip()
+            ]
+            # Always include the original query first
+            return [query] + variants[:3]
+        except Exception as e:
+            logger.warning("Query rewrite failed, using original query: %s", e)
+            return [query]
+
+
+class Reranker:
+    """Cross-encoder reranker for two-stage retrieval.
+
+    Stage 1 (FAISS) gives fast but coarse candidates.  Stage 2 (cross-encoder)
+    reads query + document together for much more accurate relevance scoring.
+    """
+
+    def __init__(self):
+        self._model = None
+
+    def _get_model(self):
+        if self._model is None:
+            import os, sys, warnings
+            os.environ["TRANSFORMERS_NO_TQDM"] = "1"
+            _stderr = sys.stderr
+            sys.stderr = open(os.devnull, "w")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from sentence_transformers import CrossEncoder
+                    self._model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            finally:
+                sys.stderr.close()
+                sys.stderr = _stderr
+        return self._model
+
+    def rerank(
+        self, query: str, results: list["SearchResult"], top_k: int
+    ) -> list["SearchResult"]:
+        if not results:
+            return results
+        try:
+            model = self._get_model()
+            pairs = [(query, r.excerpt) for r in results]
+            scores = model.predict(pairs)
+            scored = sorted(zip(scores, results), key=lambda x: x[0], reverse=True)
+            for score, result in scored:
+                result.score = float(score)
+            return [r for _, r in scored[:top_k]]
+        except Exception as e:
+            logger.warning("Reranker failed, falling back to original ranking: %s", e)
+            return results[:top_k]
+
 
 class RetrievalEngine:
     """Hybrid search combining metadata filtering and semantic vector search."""
 
-    def __init__(self, metadata_store: MetadataStore, embedding_indexer: EmbeddingIndexer):
+    def __init__(
+        self,
+        metadata_store: MetadataStore,
+        embedding_indexer: EmbeddingIndexer,
+        llm_engine=None,
+        rewrite_provider: str = "openai",
+        rewrite_model: str | None = None,
+    ):
         self._meta = metadata_store
         self._embedder = embedding_indexer
+        self._reranker = Reranker()
+        self._rewriter = QueryRewriter(llm_engine, rewrite_provider, rewrite_model)
 
     def search_metadata(
         self,
@@ -59,8 +164,8 @@ class RetrievalEngine:
             for r in records
         ]
 
-    def search_semantic(self, query: str, top_k: int = 10) -> list[SearchResult]:
-        hits = self._embedder.search(query, top_k=top_k)
+    def _faiss_hits_to_results(self, hits: list[dict]) -> list[SearchResult]:
+        """Convert raw FAISS hits to SearchResult objects."""
         results = []
         for hit in hits:
             rec = self._meta.get(hit["file_path"])
@@ -77,6 +182,34 @@ class RetrievalEngine:
             ))
         return results
 
+    def search_semantic(
+        self, query: str, top_k: int = 10, *, rerank: bool = True
+    ) -> list[SearchResult]:
+        coarse_k = top_k * 3 if rerank else top_k
+
+        # Multi-query: rewrite and merge results from all query variants
+        variants = self._rewriter.rewrite(query)
+        seen_keys: set[tuple[str, int]] = set()
+        all_hits: list[dict] = []
+        for variant in variants:
+            hits = self._embedder.search(variant, top_k=coarse_k)
+            for h in hits:
+                key = (h["file_path"], h["chunk_index"])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    all_hits.append(h)
+
+        # Sort merged hits by score descending
+        all_hits.sort(key=lambda h: h["score"], reverse=True)
+        results = self._faiss_hits_to_results(all_hits)
+
+        # Stage 2: cross-encoder reranking for accurate relevance
+        if rerank and len(results) > 1:
+            results = self._reranker.rerank(query, results, top_k)
+        else:
+            results = results[:top_k]
+        return results
+
     def search_hybrid(
         self,
         query: str,
@@ -86,7 +219,8 @@ class RetrievalEngine:
         top_k: int = 10,
         recency_weight: float = 0.1,
     ) -> list[SearchResult]:
-        semantic_hits = self.search_semantic(query, top_k=top_k * 2)
+        # Get reranked semantic results with an expanded candidate pool
+        semantic_hits = self.search_semantic(query, top_k=top_k * 2, rerank=True)
 
         if extension or directory:
             meta_paths = {

@@ -122,6 +122,7 @@ def main():
                             "directory": r.directory,
                             "excerpt": r.excerpt,
                             "score": r.score,
+                            "normalized_score": r.normalized_score,
                             "source": r.source,
                         }
                         for r in results
