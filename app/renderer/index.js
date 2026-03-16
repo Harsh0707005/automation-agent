@@ -60,6 +60,9 @@ const knowledgeSearchInput = document.getElementById('knowledge-search-input');
 const knowledgeSearchMode = document.getElementById('knowledge-search-mode');
 const knowledgeResults = document.getElementById('knowledge-results');
 const knowledgeStats = document.getElementById('knowledge-stats');
+const knowledgeClearBtn = document.getElementById('knowledge-clear-btn');
+const knowledgeRootBtn = document.getElementById('knowledge-root-btn');
+const knowledgeRootLabel = document.getElementById('knowledge-root-label');
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
@@ -1261,6 +1264,15 @@ async function renderKnowledgeStats() {
   const status = stats.indexing_status || {};
   const phase = status.phase || 'idle';
   const embedded = status.files_embedded || 0;
+  const watchedDirs = Array.isArray(stats.watched_dirs) ? stats.watched_dirs : [];
+
+  if (knowledgeRootLabel) {
+    if (watchedDirs.length > 0) {
+      knowledgeRootLabel.textContent = `Indexing from: ${watchedDirs.join(', ')}`;
+    } else {
+      knowledgeRootLabel.textContent = 'Indexing from: (not set, defaulting to home directory)';
+    }
+  }
 
   knowledgeStats.innerHTML = `
     <div class="knowledge-stat-card">
@@ -1410,6 +1422,45 @@ if (knowledgeSearchMode) {
   knowledgeSearchMode.addEventListener('change', () => {
     if (knowledgeSearchInput?.value.trim()) {
       searchKnowledge(knowledgeSearchInput.value);
+    }
+  });
+}
+
+if (knowledgeClearBtn) {
+  knowledgeClearBtn.addEventListener('click', async () => {
+    if (!window.electronAPI?.knowledgeClearAll) return;
+    knowledgeClearBtn.disabled = true;
+    try {
+      const res = await window.electronAPI.knowledgeClearAll();
+      if (!res || !res.ok) {
+        const msg = res && res.error ? res.error : 'Failed to clear knowledge';
+        knowledgeResults.innerHTML = `<div class="knowledge-empty">Error: ${msg}</div>`;
+      } else {
+        await renderKnowledgeStats();
+        if (knowledgeResults) {
+          knowledgeResults.innerHTML = '<div class="knowledge-empty">Knowledge cleared. Re-indexing from the configured folder.</div>';
+        }
+      }
+    } finally {
+      knowledgeClearBtn.disabled = false;
+    }
+  });
+}
+
+if (knowledgeRootBtn) {
+  knowledgeRootBtn.addEventListener('click', async () => {
+    if (!window.electronAPI?.knowledgePickRoot) return;
+    knowledgeRootBtn.disabled = true;
+    try {
+      const res = await window.electronAPI.knowledgePickRoot();
+      if (res?.ok && res.rootDir) {
+        await renderKnowledgeStats();
+        if (knowledgeResults) {
+          knowledgeResults.innerHTML = `<div class="knowledge-empty">Re-indexing from: ${res.rootDir}</div>`;
+        }
+      }
+    } finally {
+      knowledgeRootBtn.disabled = false;
     }
   });
 }

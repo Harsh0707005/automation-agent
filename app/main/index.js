@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, dialog } = require('electron');
 const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
@@ -113,6 +113,40 @@ function getKnowledgeDir() {
   const dir = path.join(app.getPath('userData'), 'knowledge');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function getKnowledgeConfigFile() {
+  return path.join(getKnowledgeDir(), 'config.json');
+}
+
+function readKnowledgeConfig() {
+  const file = getKnowledgeConfigFile();
+  if (!fs.existsSync(file)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeKnowledgeConfig(config) {
+  const file = getKnowledgeConfigFile();
+  try {
+    fs.writeFileSync(file, JSON.stringify(config), 'utf8');
+  } catch (_) {
+    // ignore
+  }
+}
+
+function getKnowledgeRootDir() {
+  const cfg = readKnowledgeConfig();
+  const root = typeof cfg.rootDir === 'string' && cfg.rootDir ? cfg.rootDir : os.homedir();
+  return root;
+}
+
+function setKnowledgeRootDir(rootDir) {
+  const cfg = readKnowledgeConfig();
+  writeKnowledgeConfig({ ...cfg, rootDir });
 }
 
 function getSnapshotsDir() {
@@ -251,7 +285,23 @@ function stopIndexerProcess() {
   }
 }
 
-async function startKnowledgeIndexing() {
+function clearKnowledgeData() {
+  const dir = getKnowledgeDir();
+  if (!fs.existsSync(dir)) return;
+  const entries = fs.readdirSync(dir);
+  for (const entry of entries) {
+    // Preserve config so the chosen root directory persists across clears
+    if (entry === 'config.json') continue;
+    const p = path.join(dir, entry);
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+    } catch (_e) {
+      // ignore individual delete errors
+    }
+  }
+}
+
+async function startKnowledgeIndexing(rootDirOverride) {
   startIndexerProcess();
 
   // Wait for indexer to be ready
@@ -265,17 +315,17 @@ async function startKnowledgeIndexing() {
     return;
   }
 
-  const homeDir = os.homedir();
-  console.log('[knowledge] starting indexing for', homeDir);
+  const rootDir = rootDirOverride || getKnowledgeRootDir();
+  console.log('[knowledge] starting indexing for', rootDir);
 
   try {
-    await sendToIndexer({ cmd: 'scan_async', directory: homeDir });
+    await sendToIndexer({ cmd: 'scan_async', directory: rootDir });
   } catch (e) {
     console.error('[knowledge] failed to start scan:', e.message);
   }
 
   try {
-    await sendToIndexer({ cmd: 'watch', directories: [homeDir] });
+    await sendToIndexer({ cmd: 'watch', directories: [rootDir] });
   } catch (e) {
     console.error('[knowledge] failed to start watcher:', e.message);
   }
@@ -421,6 +471,42 @@ app.whenReady().then(() => {
   ipcMain.handle('knowledge-stats', async () => {
     try {
       return await sendToIndexer({ cmd: 'stats' }, 5000);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-clear-all', async () => {
+    try {
+      stopIndexerProcess();
+      clearKnowledgeData();
+      await startKnowledgeIndexing().catch((e) => {
+        console.error('[knowledge] restart after clear failed:', e.message);
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pick-root', async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose folder to index for Knowledge',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+        return { ok: false, canceled: true };
+      }
+      const rootDir = result.filePaths[0];
+      setKnowledgeRootDir(rootDir);
+      stopIndexerProcess();
+      clearKnowledgeData();
+      await startKnowledgeIndexing(rootDir).catch((e) => {
+        console.error('[knowledge] restart after root change failed:', e.message);
+      });
+      return { ok: true, rootDir };
     } catch (e) {
       return { ok: false, error: e.message };
     }

@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   knowledgeSearch: (query, options) => ipcRenderer.invoke('knowledge-search', query, options),
   knowledgeStats: () => ipcRenderer.invoke('knowledge-stats'),
   knowledgeStatus: () => ipcRenderer.invoke('knowledge-status'),
+  knowledgeClearAll: () => ipcRenderer.invoke('knowledge-clear-all'),
+  knowledgePickRoot: () => ipcRenderer.invoke('knowledge-pick-root'),
   onKnowledgeProgress: (handler) => {
     ipcRenderer.on('knowledge-progress', (_event, status) => {
       if (typeof handler === 'function') handler(status);

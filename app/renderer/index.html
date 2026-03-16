@@ -45,8 +45,13 @@
       <div id="knowledge-panel" class="knowledge-panel" style="display:none">
         <div class="memory-panel-header">
           <div class="memory-panel-title">Knowledge Index</div>
-          <button id="knowledge-close-btn" class="memory-close-btn">&#x2715;</button>
+          <div class="memory-panel-header-right">
+            <button id="knowledge-clear-btn" class="memory-clear-btn">Clear All</button>
+            <button id="knowledge-root-btn" class="memory-clear-btn">Choose Folder</button>
+            <button id="knowledge-close-btn" class="memory-close-btn">&#x2715;</button>
+          </div>
         </div>
+        <div class="knowledge-root-label" id="knowledge-root-label"></div>
         <div class="knowledge-stats" id="knowledge-stats"></div>
         <div class="knowledge-search-row">
           <input type="text" id="knowledge-search-input" class="knowledge-search-input" placeholder="Search your files..." autocomplete="off" />
